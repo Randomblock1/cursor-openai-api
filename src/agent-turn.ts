@@ -8,6 +8,12 @@ import {
   buildSendPayload,
   promptExtrasFromRequest,
 } from "./messages.js";
+import { resolveToolTier } from "./client-tools/catalog.js";
+import {
+  ClientToolCaptureSink,
+  buildClientToolCustomTools,
+} from "./client-tools/custom-tools-bridge.js";
+import { toOpenAiToolCalls } from "./client-tools/openai-map.js";
 import type {
   ChatCompletionChunk,
   ChatCompletionRequest,
@@ -16,7 +22,11 @@ import type { ProxyContext } from "./proxy-context.js";
 import { bindRunAbort, cancelRunIfIncomplete } from "./run-lifecycle.js";
 import type { PreparedChatSession } from "./session-store.js";
 import type { SessionRequestHeaders } from "./session-keys.js";
-import { createStreamState, type StreamState } from "./stream.js";
+import {
+  chunkFromToolDelta,
+  createStreamState,
+  type StreamState,
+} from "./stream.js";
 import {
   type ChatChunkWriter,
   createStreamSink,
@@ -81,6 +91,26 @@ async function runTurnBody(
     turnStream.clientToolSpecs,
   );
 
+  // Client-tool bridge: register the request's client tools as in-process SDK
+  // customTools so a native invocation of a caller tool is captured (and
+  // converted to an OpenAI tool_call) instead of failing with "Tool not found".
+  // This is the sole client-tool channel; non-client turns skip it entirely.
+  // Tiering is applied to the customTool schemas (the prompt no longer carries a
+  // tool inventory), so it MUST live here to stay token-neutral.
+  const clientToolSpecs = turnStream.clientToolSpecs;
+  const captureSink =
+    turnStream.policy.clientToolLoop && clientToolSpecs?.length
+      ? new ClientToolCaptureSink()
+      : undefined;
+  const customTools =
+    captureSink && clientToolSpecs
+      ? buildClientToolCustomTools(
+          clientToolSpecs,
+          captureSink,
+          resolveToolTier(config),
+        )
+      : undefined;
+
   let run: Run | undefined;
   let runCompleted = false;
   let unbindAbort: (() => void) | undefined;
@@ -92,9 +122,24 @@ async function runTurnBody(
     // agents may differ when switching `*-slow` / `*-fast` mid-session.
     run = await prepared.agent.send(
       payload,
-      buildSendOptions(state, turnStream, resolved.sdk, onChunk),
+      buildSendOptions(state, turnStream, resolved.sdk, onChunk, customTools),
     );
     unbindAbort = bindRunAbort(run, abortSignal);
+    // Cancel the run once a client tool is captured so the turn ends with the
+    // tool call(s) for the caller to execute, rather than the SDK feeding a
+    // placeholder result back to the model and continuing. The sink DEBOUNCES
+    // this cancel (deferred to the next macrotask, re-armed on each capture) so
+    // that when the model emits N parallel tool calls in one turn, all N land in
+    // `execute` before the run is cancelled — cancelling on the first capture
+    // would abort the stream and drop calls 2..N. Cancel is fire-and-forget.
+    if (captureSink) {
+      const activeRun = run;
+      captureSink.bindCancel(() => {
+        if (activeRun.supports("cancel")) {
+          void activeRun.cancel().catch(() => {});
+        }
+      });
+    }
     cursorMeta.setRunId(run.id);
     await sink.begin();
 
@@ -108,16 +153,43 @@ async function runTurnBody(
     const result = await run.wait();
     runCompleted = true;
 
-    if (result.status === "error") {
-      throw new ProxyError(
-        result.result ?? "Agent run failed",
-        502,
-        "server_error",
-        "agent_run_error",
-      );
+    // A bridged turn deliberately cancels its own run, so a "cancelled" (or even
+    // "error") status with captures in hand is the success path, not a failure.
+    const bridged = captureSink?.hasCaptured() ?? false;
+    if (!bridged) {
+      if (result.status === "error") {
+        throw new ProxyError(
+          result.result ?? "Agent run failed",
+          502,
+          "server_error",
+          "agent_run_error",
+        );
+      }
+      if (result.status === "cancelled") {
+        throw new ProxyError("Agent run was cancelled", 499, "server_error");
+      }
     }
-    if (result.status === "cancelled") {
-      throw new ProxyError("Agent run was cancelled", 499, "server_error");
+
+    if (bridged && captureSink && clientToolSpecs) {
+      // Convert the captured native calls into OpenAI tool_calls. Emitting via
+      // chunkFromToolDelta both streams the delta (when streaming) and populates
+      // state.toolCalls, so finish_reason resolves to "tool_calls" on both paths.
+      const mapped = toOpenAiToolCalls({
+        toolCalls: [...captureSink.captured],
+        tools: clientToolSpecs,
+        responseId: state.completionId,
+        startIndex: state.toolCalls.size,
+      });
+      for (const call of mapped) {
+        await onChunk(
+          chunkFromToolDelta(
+            state,
+            call.id,
+            call.function.name,
+            call.function.arguments,
+          ),
+        );
+      }
     }
 
     cursorMeta.mergeFromStream(state);

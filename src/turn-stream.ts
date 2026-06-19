@@ -3,8 +3,6 @@ import {
   emitAssistantText,
   flushAssistantText,
 } from "./assistant-output.js";
-import type { ClientToolTextHandler } from "./client-tools/text-handler.js";
-import { createClientToolTextHandler } from "./client-tools/text-handler.js";
 import { parseClientTools } from "./client-tools/request.js";
 import type { ClientToolSpec } from "./client-tools/types.js";
 import type { ChatCompletionChunk, ChatCompletionRequest } from "./openai.js";
@@ -42,13 +40,6 @@ export function defaultAssistantTextStream(): AssistantTextStream {
   };
 }
 
-function asAssistantTextStream(handler: ClientToolTextHandler): AssistantTextStream {
-  return {
-    pushDelta: handler.pushText,
-    flushTurn: handler.flush,
-  };
-}
-
 export function resolveTurnStreamContext(
   request: ChatCompletionRequest,
   config: AppConfig,
@@ -61,10 +52,13 @@ export function resolveTurnStreamContext(
     };
   }
 
+  // Client tools now reach the model via SDK customTools and are captured by the
+  // bridge in agent-turn.ts — not via a marker text protocol. Model prose
+  // streams through untouched on the default assistant-text stream.
   const specs = parseClientTools(request.tools);
   return {
     policy,
     clientToolSpecs: specs,
-    assistantText: asAssistantTextStream(createClientToolTextHandler(specs)),
+    assistantText: defaultAssistantTextStream(),
   };
 }

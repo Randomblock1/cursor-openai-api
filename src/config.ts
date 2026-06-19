@@ -42,6 +42,14 @@ const envSchema = z.object({
     .positive()
     .default(30 * 60 * 1000),
   CURSOR_SESSION_MAX: z.coerce.number().int().positive().default(64),
+  // Client-tool schema tiering (provider-neutral, env-only — no request fields).
+  // `tiered` (default) keeps high-frequency resident tools' full schemas and
+  // renders the long tail as compact signatures to cut the customTools channel's
+  // token cost. See src/client-tools/catalog.ts.
+  CURSOR_TOOL_TIER: z.enum(["full", "tiered", "brief"]).optional(),
+  // Comma-separated tool names kept resident (full schema) in `tiered` mode.
+  // Falls back to DEFAULT_RESIDENT_TOOLS when unset.
+  CURSOR_TOOL_RESIDENT: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

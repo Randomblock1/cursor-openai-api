@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { createClientToolTextHandler } from "../src/client-tools/text-handler.js";
 import type { ClientToolSpec } from "../src/client-tools/types.js";
 import { chunksFromInteractionUpdate } from "../src/interaction-delta.js";
 import { createStreamState } from "../src/stream.js";
@@ -9,18 +8,19 @@ import {
   type TurnStreamContext,
 } from "../src/turn-stream.js";
 
+// Client tools now reach the model via SDK customTools and are captured by the
+// bridge in agent-turn.ts — the streaming text path no longer parses markers.
+// On a client-tool turn the assistant text streams through the default stream
+// untouched (model prose), so the only difference vs a plain turn is that
+// clientToolSpecs is populated.
 function streamContext(policy: TurnPolicy, specs?: ClientToolSpec[]): TurnStreamContext {
   if (!specs?.length) {
     return { policy, assistantText: defaultAssistantTextStream() };
   }
-  const text = createClientToolTextHandler(specs);
   return {
     policy,
     clientToolSpecs: specs,
-    assistantText: {
-      pushDelta: text.pushText,
-      flushTurn: text.flush,
-    },
+    assistantText: defaultAssistantTextStream(),
   };
 }
 
@@ -287,30 +287,20 @@ describe("chunksFromInteractionUpdate", () => {
     expect(reasoning[1]?.choices[0]?.delta.reasoning_content).toBe("planning");
   });
 
-  test("parses client tool markers from text-delta in client tool loop", () => {
+  test("client tool loop streams model prose untouched (no marker parsing)", () => {
     const state = createStreamState("composer-2");
-    const marker = [
-      "Checking.\n",
-      "<|tool_calls_begin|><|tool_call_begin|>\n",
-      "Glob\n",
-      "<|tool_sep|>glob_pattern\n",
-      "*\n",
-      "<|tool_call_end|><|tool_calls_end|>",
-    ].join("");
-
     const chunks = [
       ...chunksFromInteractionUpdate(
-        { type: "text-delta", text: marker },
+        { type: "text-delta", text: "Calling a tool now." },
         state,
         clientToolLiveStream,
       ),
     ];
 
-    expect(chunks[0]?.choices[0]?.delta.content).toBe("Checking.\n");
-    expect(chunks[1]?.choices[0]?.delta.tool_calls?.[0]?.function?.name).toBe(
-      "glob",
-    );
-    expect(state.toolCalls.size).toBe(1);
+    // Text streams straight through; tool calls are captured by the bridge, not
+    // parsed from the text stream, so no tool_calls appear here.
+    expect(chunks[0]?.choices[0]?.delta.content).toBe("Calling a tool now.");
+    expect(state.toolCalls.size).toBe(0);
   });
 
   test("suppresses SDK tool-call events in client tool loop", () => {

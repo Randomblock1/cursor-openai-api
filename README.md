@@ -41,6 +41,8 @@ npm install
 | `CURSOR_AUTO_SESSION` | no | `true` | Reuse agents when a request extends a prior in-memory conversation (for clients like AI SDK that resend full `messages[]`) |
 | `CURSOR_SESSION_TTL_MS` | no | `1800000` | Evict idle cached agents after this many ms |
 | `CURSOR_SESSION_MAX` | no | `64` | Max concurrent cached agents |
+| `CURSOR_TOOL_TIER` | no | `tiered` | Client-tool schema tiering on the native `customTools` channel: `full` (every tool full schema), `tiered` (resident tools full, long tail as compact signatures), or `brief` (all compact). Provider-neutral, env-only — there is no per-request tier field |
+| `CURSOR_TOOL_RESIDENT` | no | (built-in list) | Comma-separated tool names kept resident (full schema) in `tiered` mode |
 | `DEBUG_STREAM` | no | `false` | Include agent status events as annotated `content` in streams |
 
 ## Run
