@@ -22,6 +22,11 @@ export interface PreparedChatSession {
   deltaMessages: ChatMessage[];
   sessionKey: string | undefined;
   retainAgent: boolean;
+  // True when this turn created a brand-new agent; false when it reused a cached
+  // (keyed/auto/resumed) one. The self-heal retry in agent-turn.ts only evicts
+  // and retries reused agents — a fresh agent hitting an active-run error is a
+  // genuine failure, not a stale-cache artifact.
+  isNewAgent: boolean;
 }
 
 export class SessionStore {
@@ -58,6 +63,7 @@ export class SessionStore {
         deltaMessages: request.messages,
         sessionKey: undefined,
         retainAgent: false,
+        isNewAgent: true,
       };
     }
 
@@ -95,6 +101,7 @@ export class SessionStore {
       deltaMessages: request.messages,
       sessionKey,
       retainAgent: Boolean(sessionKey) || autoSession,
+      isNewAgent: true,
     };
   }
 
@@ -129,6 +136,15 @@ export class SessionStore {
   async releaseChatAgent(prepared: PreparedChatSession): Promise<void> {
     if (prepared.retainAgent) return;
     await prepared.agent[Symbol.asyncDispose]();
+  }
+
+  /**
+   * Drop and dispose a cached agent so the next turn for this key creates a
+   * fresh one. Used to recover from a poisoned agent (lingering active run); see
+   * `isActiveRunError`.
+   */
+  evictSession(sessionKey: string): void {
+    this.cache.invalidate(sessionKey);
   }
 
   registerTestSession(key: string, entry: SessionRegistration): void {
@@ -185,6 +201,7 @@ export class SessionStore {
         deltaMessages,
         sessionKey,
         retainAgent: Boolean(sessionKey),
+        isNewAgent: false,
       };
     } catch (err) {
       console.warn(
@@ -205,6 +222,7 @@ export class SessionStore {
       deltaMessages: deltaMessagesFromSession(messages, matched.entry),
       sessionKey: matched.key,
       retainAgent: true,
+      isNewAgent: false,
     };
   }
 

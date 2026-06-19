@@ -1,7 +1,7 @@
 import { Agent, type ModelSelection, type Run } from "@cursor/sdk";
 import { buildSendOptions, pumpSdkMessageStream } from "./agent-stream.js";
 import { CursorMetaAccumulator } from "./cursor-meta.js";
-import { ProxyError, mapCursorError } from "./errors.js";
+import { isActiveRunError, ProxyError, mapCursorError } from "./errors.js";
 import { resolveModel, type ResolvedModel } from "./model.js";
 import { resolveTurnStreamContext, type TurnStreamContext } from "./turn-stream.js";
 import {
@@ -174,7 +174,35 @@ export async function executeAgentTurn(
     agentOptions,
   );
 
-  return sessions.withAgentTurn(prepared.agentId, () =>
-    runTurnBody(ctx, options, prepared, resolved, turnStream),
-  );
+  const runPrepared = (p: PreparedChatSession) =>
+    sessions.withAgentTurn(p.agentId, () =>
+      runTurnBody(ctx, options, p, resolved, turnStream),
+    );
+
+  try {
+    return await runPrepared(prepared);
+  } catch (err) {
+    // Self-heal a cached agent left with a lingering non-terminal run (e.g. a
+    // dropped stream / client disconnect). Reusing such an agent makes the SDK
+    // throw "already has active run" on every turn, permanently wedging the
+    // session. The guard throws before any stream output is written, so evicting
+    // the agent and retrying once on a fresh one is safe even when streaming —
+    // and since the caller resends the full conversation, the fresh agent
+    // recovers cleanly. Only attempt this for a reused, keyed agent; a fresh
+    // agent that hits this is a genuine error, not a stale-cache artifact.
+    if (!isActiveRunError(err) || prepared.isNewAgent || !prepared.sessionKey) {
+      throw err;
+    }
+    sessions.evictSession(prepared.sessionKey);
+    const freshAgent = await Agent.create(agentOptions);
+    const fresh: PreparedChatSession = {
+      agent: freshAgent,
+      agentId: freshAgent.agentId,
+      deltaMessages: request.messages,
+      sessionKey: prepared.sessionKey,
+      retainAgent: true,
+      isNewAgent: true,
+    };
+    return await runPrepared(fresh);
+  }
 }

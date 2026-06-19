@@ -12,6 +12,18 @@ export class ProxyError extends Error {
   }
 }
 
+/**
+ * True when an error is the SDK's "already has active run" rejection — raised
+ * when a cached agent is reused while it still has a lingering non-terminal run
+ * (e.g. a dropped stream / client disconnect). The message survives
+ * `mapCursorError` wrapping, so this matches both the raw and wrapped forms.
+ */
+export function isActiveRunError(err: unknown): boolean {
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /already has active run/i.test(message);
+}
+
 export function mapCursorError(err: unknown): ProxyError {
   if (err instanceof ProxyError) return err;
   if (err instanceof CursorAgentError) {
