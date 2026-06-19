@@ -41,6 +41,8 @@ npm install
 | `CURSOR_AUTO_SESSION` | no | `true` | Reuse agents when a request extends a prior in-memory conversation (for clients like AI SDK that resend full `messages[]`) |
 | `CURSOR_SESSION_TTL_MS` | no | `1800000` | Evict idle cached agents after this many ms |
 | `CURSOR_SESSION_MAX` | no | `64` | Max concurrent cached agents |
+| `CURSOR_TOOL_TIER` | no | `tiered` | Client-tool schema tiering on the native `customTools` channel: `full` (every tool full schema), `tiered` (resident tools full, long tail as compact signatures), or `brief` (all compact). Provider-neutral, env-only — there is no per-request tier field |
+| `CURSOR_TOOL_RESIDENT` | no | (none) | Comma-separated tool names kept resident (full schema) in `tiered` mode. Opt-in only — when unset, every tool is rendered as a compact signature |
 | `DEBUG_STREAM` | no | `false` | Include agent status events as annotated `content` in streams |
 
 ## Run
@@ -331,16 +333,17 @@ Three modes:
 1. **Plain chat** (default) — `CURSOR_EMIT_TOOL_CALLS=false` and no `tools` on the request. Cursor may use its own tools in `CURSOR_CWD`, but the proxy does not surface them; `finish_reason` stays `stop` and only assistant text/reasoning is returned.
 
 2. **Client tool loop** (OpenCode / AI SDK) — When the request includes a non-empty `tools` array and `tool_choice` is not `"none"`, the proxy enters **client tool loop** mode automatically:
-   - Instructs the model to emit Composer tool-call markers for **your** tool names.
-   - Parses those markers from the text stream and returns OpenAI `tool_calls` with `finish_reason: "tool_calls"`.
+   - Registers **your** tools as Cursor SDK `customTools`, so the model invokes them through its native tool channel rather than emitting parsed-from-prose text markers.
+   - Captures each native invocation through an in-process bridge and returns OpenAI `tool_calls` with `finish_reason: "tool_calls"`. Parallel tool calls in one turn are all captured and surfaced as distinct, paired `tool_call` ids.
    - Supports function tools only; non-function tool definitions are rejected.
    - Your client executes tools locally and resends `tool` / `assistant.tool_calls` messages; the proxy does not run client tool handlers.
    - `CURSOR_EMIT_TOOL_CALLS` is ignored for these requests (Cursor-internal tool events are not forwarded).
    - `POST /v1/responses` with `tools` is rejected (use chat completions).
+   - **Schema tiering** (`CURSOR_TOOL_TIER`, default `tiered`): your client already holds each tool's real schema, so on the native channel the model only needs the tool name and argument names to emit a correct call. In `tiered` mode the long tail is registered as a compact signature (name + arg names) while tools listed in `CURSOR_TOOL_RESIDENT` keep their full schema; `full` registers every tool with its full schema and `brief` makes every tool compact. `CURSOR_TOOL_RESIDENT` is opt-in (e.g. `CURSOR_TOOL_RESIDENT=read_file,run_command`); with no opt-in every tool is compact. Tiering is env-only — the wire format stays a standard OpenAI request.
 
 3. **Cursor tool visibility** — `CURSOR_EMIT_TOOL_CALLS=true` (or `cursor_emit_tool_calls: true`) only when **not** in client tool loop. Surfaces Cursor SDK `tool-call-*` deltas as best-effort OpenAI `tool_calls` (Read, Shell, etc.). Usually **not** what you want alongside OpenCode's own `tools` array.
 
-**Note:** The SDK may still run Cursor's built-in tools in the workspace when the model ignores the client-tool prompt. The HTTP response only exposes **client** `tool_calls`. If you see unexpected file changes during client tool loops, treat that as a known limitation until a stricter SDK guard exists.
+**Note:** The SDK may still run Cursor's built-in tools in the workspace alongside your registered `customTools`. The HTTP response only exposes **client** `tool_calls`. If you see unexpected file changes during client tool loops, treat that as a known limitation until a stricter SDK guard exists.
 
 - **Usage fields**: Mapped from Cursor `turn-ended` deltas (`onDelta` on `agent.send()`). `prompt_tokens` is total input-side tokens (input + cache read + cache write); `prompt_tokens_details.cached_tokens` reports cache reads per the OpenAI usage schema. Omitted when the SDK does not report usage for a turn.
 - **DEBUG_STREAM**: Status events only (`[status] ...` in `content`). Thinking uses `reasoning_content`, not `DEBUG_STREAM`.

@@ -59,7 +59,7 @@ describe("serializeMessagesToPrompt", () => {
     expect(prompt).toContain("foo");
   });
 
-  test("uses client tool loop prompt when specs are provided", () => {
+  test("uses slim client tool loop prompt when specs are provided", () => {
     const prompt = serializeMessagesToPrompt(
       [{ role: "user", content: "Hi" }],
       {
@@ -67,8 +67,12 @@ describe("serializeMessagesToPrompt", () => {
       },
       [{ name: "foo" }],
     );
-    expect(prompt).toContain("CLIENT TOOL INVENTORY");
-    expect(prompt).toContain("tool_calls_begin");
+    // Tools reach the model via SDK customTools now — no in-prompt inventory or
+    // marker protocol, and no raw schema dump.
+    expect(prompt).toContain("OpenAI-compatible API request through Cursor");
+    expect(prompt).toContain("Conversation:");
+    expect(prompt).not.toContain("CLIENT TOOL INVENTORY");
+    expect(prompt).not.toContain("tool_calls_begin");
     expect(prompt).not.toContain("## CLIENT_TOOLS");
   });
 });
