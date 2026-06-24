@@ -1,6 +1,7 @@
 import { Agent, type ModelSelection, type Run } from "@cursor/sdk";
 import { buildSendOptions, pumpSdkMessageStream } from "./agent-stream.js";
 import { CursorMetaAccumulator } from "./cursor-meta.js";
+import { cwdIdentity, resolveWorkspaceCwd } from "./workspace.js";
 import { ProxyError, mapCursorError } from "./errors.js";
 import { resolveModel, type ResolvedModel } from "./model.js";
 import { resolveTurnStreamContext, type TurnStreamContext } from "./turn-stream.js";
@@ -47,11 +48,12 @@ export interface AgentTurnOutcome {
 function createAgentOptions(
   config: ProxyContext["config"],
   sdkModel: ModelSelection,
+  cwd: string | string[],
 ) {
   return {
     apiKey: config.CURSOR_API_KEY,
     model: sdkModel,
-    local: { cwd: config.CURSOR_CWD, settingSources: [] },
+    local: { cwd, settingSources: [] },
   };
 }
 
@@ -163,8 +165,11 @@ export async function executeAgentTurn(
     config,
     turnStream.policy.includeThinking,
   );
-  const agentOptions = createAgentOptions(config, resolved.sdk);
+  const cwd = resolveWorkspaceCwd(request, headers, config);
+  const agentOptions = createAgentOptions(config, resolved.sdk, cwd);
 
+  // The SDK agent is created with the full (possibly multi-root) cwd, but the
+  // session cache keys by a single canonical string so reuse keeps matching.
   const prepared = await sessions.prepareChatSession(
     () => Agent.create(agentOptions),
     request,
@@ -172,6 +177,7 @@ export async function executeAgentTurn(
     config,
     headers,
     agentOptions,
+    cwdIdentity(cwd),
   );
 
   return sessions.withAgentTurn(prepared.agentId, () =>

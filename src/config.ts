@@ -7,6 +7,11 @@ import {
 const envSchema = z.object({
   CURSOR_API_KEY: z.string().min(1, "CURSOR_API_KEY is required"),
   CURSOR_CWD: z.string().min(1).default(process.cwd()),
+  // Comma-separated absolute roots a per-request `cursor_cwd` override may point
+  // at. Empty/unset = unrestricted (CURSOR_CWD is always implicitly allowed).
+  // Gate overrides here when the proxy can reach directories a caller should not
+  // be able to select, rather than letting callers pick arbitrary paths.
+  CURSOR_CWD_ALLOWLIST: z.string().optional(),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   HOST: z.string().default("0.0.0.0"),
   DEFAULT_MODEL: z.string().default("composer-2.5"),

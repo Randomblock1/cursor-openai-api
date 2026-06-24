@@ -10,7 +10,10 @@ export function formatZodIssues(issues: ZodIssue[]): string {
 }
 
 export function extractSessionHeaders(c: Context): SessionRequestHeaders {
-  return { "x-session-id": c.req.header("x-session-id") };
+  return {
+    "x-session-id": c.req.header("x-session-id"),
+    "x-cursor-cwd": c.req.header("x-cursor-cwd"),
+  };
 }
 
 export function proxyErrorResponse(err: ProxyError): Response {

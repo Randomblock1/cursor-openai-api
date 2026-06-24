@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Agent, type SDKAgent } from "@cursor/sdk";
 import type { AppConfig } from "./config.js";
 import type { ChatCompletionRequest, ChatMessage } from "./openai.js";
@@ -21,6 +22,7 @@ export interface PreparedChatSession {
   agentId: string;
   deltaMessages: ChatMessage[];
   sessionKey: string | undefined;
+  cwd: string;
   retainAgent: boolean;
 }
 
@@ -31,8 +33,9 @@ export class SessionStore {
   findMatchingSessionEntry(
     modelId: string,
     messages: ChatMessage[],
+    cwd?: string,
   ): { key: string; entry: SessionEntry } | undefined {
-    return this.cache.findAutoMatch(modelId, messages);
+    return this.cache.findAutoMatch(modelId, messages, cwd);
   }
 
   async withAgentTurn<T>(
@@ -49,7 +52,14 @@ export class SessionStore {
     config: AppConfig,
     headers?: SessionRequestHeaders,
     createAgentOptions?: Parameters<typeof Agent.create>[0],
+    cwd?: string,
   ): Promise<PreparedChatSession> {
+    // Normalize the fallback the same way resolveWorkspaceCwd() normalizes
+    // overrides. cwd is part of an agent's identity (see cwdMatches in
+    // session-cache.ts), so a raw CURSOR_CWD here would not string-equal the
+    // path.resolve()d cwd a later turn supplies for the same workspace.
+    const sessionCwd = cwd ?? path.resolve(config.CURSOR_CWD);
+
     if (!config.CURSOR_ENABLE_SESSIONS) {
       const agent = await createAgent();
       return {
@@ -57,6 +67,7 @@ export class SessionStore {
         agentId: agent.agentId,
         deltaMessages: request.messages,
         sessionKey: undefined,
+        cwd: sessionCwd,
         retainAgent: false,
       };
     }
@@ -66,12 +77,21 @@ export class SessionStore {
     const sessionKey = resolveSessionKey(request, headers);
 
     if (sessionKey) {
-      const keyed = this.tryKeyedSession(sessionKey, request, sdkModelId);
+      const keyed = this.tryKeyedSession(
+        sessionKey,
+        request,
+        sdkModelId,
+        sessionCwd,
+      );
       if (keyed) return keyed;
     }
 
     if (config.CURSOR_AUTO_SESSION !== false) {
-      const matched = this.tryAutoMatchedSession(sdkModelId, request.messages);
+      const matched = this.tryAutoMatchedSession(
+        sdkModelId,
+        request.messages,
+        sessionCwd,
+      );
       if (matched) return matched;
     }
 
@@ -82,6 +102,7 @@ export class SessionStore {
         createAgentOptions,
         request,
         sessionKey,
+        sessionCwd,
       );
       if (resumed) return resumed;
     }
@@ -94,6 +115,7 @@ export class SessionStore {
       agentId: agent.agentId,
       deltaMessages: request.messages,
       sessionKey,
+      cwd: sessionCwd,
       retainAgent: Boolean(sessionKey) || autoSession,
     };
   }
@@ -119,6 +141,7 @@ export class SessionStore {
       agent: prepared.agent,
       agentId: prepared.agentId,
       modelId,
+      cwd: prepared.cwd,
       messages: request.messages,
       lastAccess: Date.now(),
     });
@@ -144,24 +167,27 @@ export class SessionStore {
     sessionKey: string,
     request: ChatCompletionRequest,
     modelId: string,
+    cwd: string,
   ): PreparedChatSession | undefined {
     const matched = this.cache.matchKeyedSession(
       sessionKey,
       modelId,
       request.messages,
+      cwd,
     );
     return matched
-      ? this.prepareFromMatchedSession(matched, request.messages)
+      ? this.prepareFromMatchedSession(matched, request.messages, cwd)
       : undefined;
   }
 
   private tryAutoMatchedSession(
     modelId: string,
     messages: ChatMessage[],
+    cwd: string,
   ): PreparedChatSession | undefined {
-    const matched = this.findMatchingSessionEntry(modelId, messages);
+    const matched = this.findMatchingSessionEntry(modelId, messages, cwd);
     if (!matched) return undefined;
-    return this.prepareFromMatchedSession(matched, messages);
+    return this.prepareFromMatchedSession(matched, messages, cwd);
   }
 
   private async tryResumeAgent(
@@ -169,6 +195,7 @@ export class SessionStore {
     createAgentOptions: Parameters<typeof Agent.create>[0],
     request: ChatCompletionRequest,
     sessionKey: string | undefined,
+    cwd: string,
   ): Promise<PreparedChatSession | undefined> {
     try {
       const agent = await Agent.resume(resumeAgentId, createAgentOptions);
@@ -184,6 +211,7 @@ export class SessionStore {
         agentId: agent.agentId,
         deltaMessages,
         sessionKey,
+        cwd,
         retainAgent: Boolean(sessionKey),
       };
     } catch (err) {
@@ -198,12 +226,14 @@ export class SessionStore {
   private prepareFromMatchedSession(
     matched: MatchedSession,
     messages: ChatMessage[],
+    cwd: string,
   ): PreparedChatSession {
     return {
       agent: matched.entry.agent,
       agentId: matched.entry.agentId,
       deltaMessages: deltaMessagesFromSession(messages, matched.entry),
       sessionKey: matched.key,
+      cwd,
       retainAgent: true,
     };
   }
