@@ -1,5 +1,10 @@
 import { Agent, type ModelSelection, type Run } from "@cursor/sdk";
-import { buildSendOptions, pumpSdkMessageStream } from "./agent-stream.js";
+import {
+  buildSendOptions,
+  pumpSdkMessageStream,
+  startStreamWatchdog,
+  type StreamActivity,
+} from "./agent-stream.js";
 import { CursorMetaAccumulator } from "./cursor-meta.js";
 import { ProxyError, mapCursorError } from "./errors.js";
 import { resolveModel, type ResolvedModel } from "./model.js";
@@ -85,11 +90,23 @@ async function runTurnBody(
   let runCompleted = false;
   let unbindAbort: (() => void) | undefined;
   const sink = createStreamSink(options.stream?.write, state, cursorMeta);
-  const onChunk = (chunk: ChatCompletionChunk) => sink.writeDelta(chunk);
+  // Track liveness off the emitted deltas (what the consumer actually sees) so
+  // the stall watchdog measures TTFB and inter-delta idle, not raw SDK events.
+  const activity: StreamActivity = {
+    firstDeltaAt: undefined,
+    lastActivityAt: Date.now(),
+  };
+  const onChunk = (chunk: ChatCompletionChunk) => {
+    const now = Date.now();
+    activity.lastActivityAt = now;
+    if (activity.firstDeltaAt === undefined) activity.firstDeltaAt = now;
+    return sink.writeDelta(chunk);
+  };
 
   try {
     // Per-send `model` is authoritative for tier/params; create-time model on reused
     // agents may differ when switching `*-slow` / `*-fast` mid-session.
+    const sendStartedAt = Date.now();
     run = await prepared.agent.send(
       payload,
       buildSendOptions(state, turnStream, resolved.sdk, onChunk),
@@ -98,12 +115,28 @@ async function runTurnBody(
     cursorMeta.setRunId(run.id);
     await sink.begin();
 
-    await pumpSdkMessageStream(
-      run,
-      state,
-      turnStream.policy.debugStream,
-      onChunk,
-    );
+    // Bound the streaming window: cancel + 504 if the run never produces a first
+    // delta (TTFB) or goes silent mid-stream (idle), instead of hanging forever.
+    const watchdog = startStreamWatchdog(run, activity, {
+      ttfbTimeoutMs: config.CURSOR_STREAM_TTFB_TIMEOUT_MS,
+      idleTimeoutMs: config.CURSOR_STREAM_IDLE_TIMEOUT_MS,
+      sendStartedAt,
+    });
+    try {
+      const pump = pumpSdkMessageStream(
+        run,
+        state,
+        turnStream.policy.debugStream,
+        onChunk,
+      );
+      // The race's loser keeps running; ensure its rejection can't go unhandled.
+      pump.catch(() => {});
+      await Promise.race([pump, watchdog.expired]);
+    } finally {
+      // Once the stream has drained, idle/TTFB no longer apply — only the
+      // streaming window is guarded.
+      watchdog.stop();
+    }
 
     const result = await run.wait();
     runCompleted = true;

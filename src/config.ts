@@ -42,6 +42,32 @@ const envSchema = z.object({
     .positive()
     .default(30 * 60 * 1000),
   CURSOR_SESSION_MAX: z.coerce.number().int().positive().default(64),
+  // Stream stall hardening. The proxy otherwise has no TTFB/idle bound, so a slow
+  // upstream prefill surfaces to the consumer as an indefinite silent hang.
+  // TTFB: max wait from `agent.send` to the first emitted delta before the run is
+  // cancelled and a 504 is returned. Default 15min — a legitimate large-context
+  // Opus prefill can run ~10min before it emits its first chunk, and these
+  // timeouts (not the best-effort heartbeat) are the real protection.
+  CURSOR_STREAM_TTFB_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(900000),
+  // Idle: max gap between emitted deltas mid-stream before the run is cancelled.
+  // Default 5min to tolerate multi-minute mid-stream Opus thinking pauses.
+  CURSOR_STREAM_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(300000),
+  // Heartbeat: SSE comment ping cadence while awaiting the first delta, so the
+  // consumer sees liveness during a slow prefill. Best-effort only (see
+  // startSseHeartbeat); `0` disables it, hence nonnegative rather than positive.
+  CURSOR_STREAM_HEARTBEAT_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(15000),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
