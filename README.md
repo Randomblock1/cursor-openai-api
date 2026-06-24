@@ -41,6 +41,8 @@ npm install
 | `CURSOR_AUTO_SESSION` | no | `true` | Reuse agents when a request extends a prior in-memory conversation (for clients like AI SDK that resend full `messages[]`) |
 | `CURSOR_SESSION_TTL_MS` | no | `1800000` | Evict idle cached agents after this many ms |
 | `CURSOR_SESSION_MAX` | no | `64` | Max concurrent cached agents |
+| `CURSOR_PROXY_RECYCLE_MS` | no | `2700000` | Exit cleanly (code 0) once process uptime exceeds this, draining in-flight turns first, so a process supervisor relaunches with fresh auth before the ~hourly Cursor token expiry wedges the proxy. `0` disables it |
+| `CURSOR_PROXY_RECYCLE_GRACE_MS` | no | `300000` | Grace window after the recycle deadline: if in-flight turns never drain, force the restart this long after the deadline anyway |
 | `DEBUG_STREAM` | no | `false` | Include agent status events as annotated `content` in streams |
 
 ## Run

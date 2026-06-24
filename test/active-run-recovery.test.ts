@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SDKAgent } from "@cursor/sdk";
-import { isActiveRunError, mapCursorError } from "../src/errors.js";
+import { AuthenticationError, type SDKAgent } from "@cursor/sdk";
+import {
+  isActiveRunError,
+  isAuthWedgeError,
+  mapCursorError,
+} from "../src/errors.js";
 import { SessionStore } from "../src/session-store.js";
 
 describe("isActiveRunError", () => {
@@ -24,6 +28,38 @@ describe("isActiveRunError", () => {
     expect(isActiveRunError(new Error("Agent run failed"))).toBe(false);
     expect(isActiveRunError(undefined)).toBe(false);
     expect(isActiveRunError({ nope: 1 })).toBe(false);
+  });
+});
+
+describe("isAuthWedgeError", () => {
+  test("matches the SDK's raw ConnectError unauthenticated", () => {
+    expect(isAuthWedgeError(new Error("ConnectError: [unauthenticated]"))).toBe(
+      true,
+    );
+  });
+
+  test("matches ERROR_NOT_LOGGED_IN (underscored)", () => {
+    expect(isAuthWedgeError(new Error("ERROR_NOT_LOGGED_IN"))).toBe(true);
+  });
+
+  test("survives mapCursorError wrapping (message preserved)", () => {
+    const wrapped = mapCursorError(new Error("rpc failed: unauthenticated"));
+    expect(isAuthWedgeError(wrapped)).toBe(true);
+  });
+
+  test("matches the SDK's AuthenticationError by class/name", () => {
+    expect(isAuthWedgeError(new AuthenticationError("bad key"))).toBe(true);
+  });
+
+  test("matches a bare string", () => {
+    expect(isAuthWedgeError("not logged in")).toBe(true);
+  });
+
+  test("does not match unrelated errors", () => {
+    expect(isAuthWedgeError(new Error("already has active run"))).toBe(false);
+    expect(isAuthWedgeError(new Error("Agent run failed"))).toBe(false);
+    expect(isAuthWedgeError(undefined)).toBe(false);
+    expect(isAuthWedgeError({ nope: 1 })).toBe(false);
   });
 });
 
