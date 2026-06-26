@@ -42,6 +42,24 @@ const envSchema = z.object({
     .positive()
     .default(30 * 60 * 1000),
   CURSOR_SESSION_MAX: z.coerce.number().int().positive().default(64),
+  // Proactive pre-expiry recycle. The Cursor access token derived from
+  // CURSOR_API_KEY expires ~hourly and is not refreshed in-process, so a
+  // long-lived proxy eventually wedges with `[unauthenticated]` on every run
+  // (see recycle.ts / auth-health.ts). Exit cleanly after this much uptime —
+  // below the ~60min token TTL — so a process supervisor relaunches with fresh
+  // auth before a live turn ever hits an expired token. `0` disables it.
+  CURSOR_PROXY_RECYCLE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(45 * 60 * 1000),
+  // Grace window after the recycle deadline: if in-flight turns never drain,
+  // force the restart this long after the deadline anyway.
+  CURSOR_PROXY_RECYCLE_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(5 * 60 * 1000),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
