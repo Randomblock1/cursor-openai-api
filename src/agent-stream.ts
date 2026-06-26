@@ -1,4 +1,9 @@
-import type { InteractionUpdate, ModelSelection, Run } from "@cursor/sdk";
+import type {
+  InteractionUpdate,
+  ModelSelection,
+  Run,
+  SDKCustomTool,
+} from "@cursor/sdk";
 import { applyInteractionUpdate } from "./interaction-delta.js";
 import type { ChatCompletionChunk } from "./openai.js";
 import type { StreamState } from "./stream.js";
@@ -25,6 +30,10 @@ export function buildSendOptions(
   stream: TurnStreamContext,
   sdkModel: ModelSelection,
   writeChunk?: (chunk: ChatCompletionChunk) => Promise<void>,
+  // Client-tool bridge: when present, register the request's client tools as
+  // in-process SDK tools so native invocations are captured instead of failing
+  // with "Tool not found" (see client-tools/custom-tools-bridge.ts).
+  customTools?: Record<string, SDKCustomTool>,
 ) {
   return {
     model: sdkModel,
@@ -32,6 +41,7 @@ export function buildSendOptions(
       await applyInteractionUpdate(state, update, stream, writeChunk);
       captureTurnUsage(state, update);
     },
+    ...(customTools ? { local: { customTools } } : {}),
   };
 }
 
