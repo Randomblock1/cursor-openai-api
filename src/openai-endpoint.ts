@@ -25,6 +25,39 @@ export interface OpenAIStreamSink {
   setHeaders: (headers: Record<string, string>) => void;
 }
 
+/**
+ * While awaiting the upstream's first byte, emit an SSE comment ping every
+ * `intervalMs` so a slow prefill reads as live instead of an indefinite silent
+ * hang. Returns a stop function — call it once the first real (content-bearing)
+ * chunk is written (and again on teardown; it is idempotent). No-op when
+ * `intervalMs <= 0`, which is the supported disable path.
+ *
+ * BEST-EFFORT ONLY: these comment pings keep generic OpenAI clients and
+ * intermediaries (proxies, load balancers) from treating the connection as idle.
+ * They CANNOT keep a consumer alive when it ignores SSE comments for staleness.
+ * The TTFB/idle timeouts
+ * (CURSOR_STREAM_TTFB_TIMEOUT_MS / CURSOR_STREAM_IDLE_TIMEOUT_MS) are the real
+ * protection for a slow prefill; the heartbeat is purely cosmetic liveness.
+ */
+export function startSseHeartbeat(
+  stream: SSEStreamingApi,
+  intervalMs: number,
+): () => void {
+  if (intervalMs <= 0) return () => {};
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    // SSE comment line: clients ignore it, but the bytes prove liveness.
+    void stream.write(": ping\n\n").catch(() => {});
+  }, intervalMs);
+  timer.unref?.();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 export function registerOpenAIEndpoint<TRequest extends { stream?: boolean }>(
   app: Hono,
   proxy: ProxyContext,

@@ -203,6 +203,22 @@ export function roleChunk(state: StreamState): ChatCompletionChunk {
   return baseChunk(state, { role: "assistant" });
 }
 
+// True only for a chunk that carries actual model output (text, reasoning, or a
+// tool call). The assistant role bootstrap chunk (`delta: { role: "assistant" }`,
+// emitted by the sink before any output) and the terminal finish chunk (empty
+// delta) are NOT content-bearing. The SSE heartbeat keys off this so it survives
+// the role bootstrap and stops only on the first real delta.
+export function isContentBearingChunk(chunk: ChatCompletionChunk): boolean {
+  const delta = chunk.choices[0]?.delta;
+  if (!delta) return false;
+  return (
+    delta.content !== undefined ||
+    delta.reasoning_content !== undefined ||
+    delta.reasoning !== undefined ||
+    (delta.tool_calls?.length ?? 0) > 0
+  );
+}
+
 export function finishChunk(
   state: StreamState,
   preferred: "stop" | "tool_calls" = "stop",

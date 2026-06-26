@@ -15,14 +15,19 @@ export function bindRunAbort(run: Run, signal: AbortSignal | undefined): () => v
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-export async function cancelRunIfIncomplete(
-  run: Run | undefined,
-  completed: boolean,
-): Promise<void> {
-  if (completed || !run?.supports("cancel")) return;
+export async function cancelRunSafely(run: Run): Promise<void> {
+  if (!run.supports("cancel")) return;
   try {
     await run.cancel();
   } catch {
     /* ignore */
   }
+}
+
+export async function cancelRunIfIncomplete(
+  run: Run | undefined,
+  completed: boolean,
+): Promise<void> {
+  if (completed || !run) return;
+  await cancelRunSafely(run);
 }
