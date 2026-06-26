@@ -2,6 +2,7 @@ import type { ChatCompletionRequest } from "./openai.js";
 
 export interface SessionRequestHeaders {
   "x-session-id"?: string;
+  "x-cursor-cwd"?: string;
 }
 
 export function resolveSessionKey(

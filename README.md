@@ -29,7 +29,8 @@ npm install
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CURSOR_API_KEY` | yes | — | Cursor user or team service account key |
-| `CURSOR_CWD` | no | `process.cwd()` | Local workspace directory for the agent |
+| `CURSOR_CWD` | no | `process.cwd()` | Local workspace directory for the agent. A per-request override (`cursor_cwd` field, `metadata.cursor_cwd`, or `x-cursor-cwd` header) takes precedence; a `.code-workspace` file expands to its declared folder roots |
+| `CURSOR_CWD_ALLOWLIST` | no | (none) | Comma-separated absolute roots a per-request `cursor_cwd` override may point at (each must equal or sit under one). Empty/unset = unrestricted; `CURSOR_CWD` is always implicitly allowed |
 | `PORT` | no | `8080` | HTTP listen port |
 | `HOST` | no | `0.0.0.0` | HTTP listen host |
 | `DEFAULT_MODEL` | no | `composer-2.5` | Model when the client omits `model` |

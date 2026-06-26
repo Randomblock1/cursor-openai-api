@@ -60,6 +60,7 @@ const chatCompletionRequestShape = {
   cursor_include_thinking: z.boolean().optional(),
   cursor_emit_tool_calls: z.boolean().optional(),
   cursor_assistant_text_mode: z.enum(ASSISTANT_TEXT_MODES).optional(),
+  cursor_cwd: z.string().optional(),
   response_format: z.unknown().optional(),
   verbosity: z.string().optional(),
   stop: stopSchema.optional(),
