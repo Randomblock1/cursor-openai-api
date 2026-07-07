@@ -42,6 +42,7 @@ npm install
 | `CURSOR_SESSION_TTL_MS` | no | `1800000` | Evict idle cached agents after this many ms |
 | `CURSOR_SESSION_MAX` | no | `64` | Max concurrent cached agents |
 | `CURSOR_TOOL_RESULT_TIMEOUT_MS` | no | `600000` | Cancel a run paused on client tool calls if the follow-up request with tool results never arrives (see [Tool calls](#tool-calls)) |
+| `CURSOR_SANDBOX` | no | `false` | Run local agents with the Cursor SDK sandbox enabled: writes restricted to the workspace, privileged shell commands denied, network denied by default (allowlist hosts via `.cursor/sandbox.json`) |
 | `DEBUG_STREAM` | no | `false` | Include agent status events as annotated `content` in streams |
 
 ## Run
@@ -344,7 +345,7 @@ Three modes:
 
 3. **Cursor tool visibility** — `CURSOR_EMIT_TOOL_CALLS=true` (or `cursor_emit_tool_calls: true`) only when **not** in client tool loop. Surfaces Cursor SDK `tool-call-*` deltas as best-effort OpenAI `tool_calls` (Read, Shell, etc.). Usually **not** what you want alongside OpenCode's own `tools` array.
 
-**Note:** The SDK may still run Cursor's built-in tools in the workspace during client tool loops — the prompt steers the model toward your tools, but there is no hard SDK switch to disable them. The HTTP response only exposes **client** `tool_calls`.
+**Note:** The SDK may still run Cursor's built-in tools in the workspace during client tool loops — the prompt steers the model toward your tools, and `CURSOR_SANDBOX=true` constrains what built-in tools can touch, but there is no hard SDK switch to disable them. The HTTP response only exposes **client** `tool_calls`.
 
 - **Usage fields**: Mapped from Cursor `turn-ended` deltas (`onDelta` on `agent.send()`). `prompt_tokens` is total input-side tokens (input + cache read + cache write); `prompt_tokens_details.cached_tokens` reports cache reads per the OpenAI usage schema. Omitted when the SDK does not report usage for a turn.
 - **DEBUG_STREAM**: Status events only (`[status] ...` in `content`). Thinking uses `reasoning_content`, not `DEBUG_STREAM`.

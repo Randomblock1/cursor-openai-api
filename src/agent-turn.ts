@@ -63,7 +63,11 @@ function createAgentOptions(
   return {
     apiKey: config.CURSOR_API_KEY,
     model: sdkModel,
-    local: { cwd: config.CURSOR_CWD, settingSources: [] },
+    local: {
+      cwd: config.CURSOR_CWD,
+      settingSources: [],
+      ...(config.CURSOR_SANDBOX ? { sandboxOptions: { enabled: true } } : {}),
+    },
   };
 }
 
