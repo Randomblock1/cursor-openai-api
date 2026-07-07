@@ -112,18 +112,60 @@ export function responsesInputToMessages(
   return messages;
 }
 
+/**
+ * Responses tools are flat (`{type:"function", name, parameters}`); chat
+ * completions nest the function fields. Convert so both endpoints share the
+ * native customTools path.
+ */
+function responsesToolsToChatTools(
+  tools: ResponsesRequest["tools"],
+): ChatCompletionRequest["tools"] {
+  if (!tools?.length) return undefined;
+  return tools.map((tool, index) => {
+    if (tool.type !== "function" || typeof tool.name !== "string") {
+      throw new ProxyError(
+        `Only function tools are supported: tools[${index}]`,
+        400,
+        "invalid_request_error",
+        `tools[${index}]`,
+      );
+    }
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        ...(typeof tool.description === "string"
+          ? { description: tool.description }
+          : {}),
+        ...(tool.parameters !== undefined
+          ? { parameters: tool.parameters }
+          : {}),
+      },
+    };
+  });
+}
+
+function responsesToolChoiceToChat(
+  toolChoice: unknown,
+): ChatCompletionRequest["tool_choice"] {
+  if (toolChoice == null) return undefined;
+  if (typeof toolChoice === "string") return toolChoice;
+  if (
+    typeof toolChoice === "object" &&
+    Reflect.get(toolChoice, "type") === "function" &&
+    typeof Reflect.get(toolChoice, "name") === "string"
+  ) {
+    return {
+      type: "function",
+      function: { name: Reflect.get(toolChoice, "name") },
+    };
+  }
+  return toolChoice as ChatCompletionRequest["tool_choice"];
+}
+
 export function responsesToChatRequest(
   request: ResponsesRequest,
 ): ChatCompletionRequest {
-  if (Array.isArray(request.tools) && request.tools.length > 0) {
-    throw new ProxyError(
-      "OpenAI Responses tools are not supported by this adapter. Use POST /v1/chat/completions with a tools array instead.",
-      400,
-      "invalid_request_error",
-      "tools",
-    );
-  }
-
   const messages: ChatMessage[] = [];
 
   if (request.instructions?.trim()) {
@@ -141,8 +183,8 @@ export function responsesToChatRequest(
     temperature: request.temperature,
     top_p: request.top_p,
     max_tokens: request.max_output_tokens,
-    tools: request.tools,
-    tool_choice: request.tool_choice,
+    tools: responsesToolsToChatTools(request.tools),
+    tool_choice: responsesToolChoiceToChat(request.tool_choice),
     metadata: normalizeChatMetadata(request.metadata),
     user: request.user,
     reasoning_effort: request.reasoning?.effort,

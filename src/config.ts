@@ -42,6 +42,13 @@ const envSchema = z.object({
     .positive()
     .default(30 * 60 * 1000),
   CURSOR_SESSION_MAX: z.coerce.number().int().positive().default(64),
+  // How long a run paused on client tool calls waits for the follow-up
+  // request carrying the tool results before it is cancelled.
+  CURSOR_TOOL_RESULT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10 * 60 * 1000),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

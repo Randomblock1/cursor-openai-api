@@ -33,13 +33,42 @@ describe("responsesRequestSchema", () => {
 });
 
 describe("responsesToChatRequest", () => {
-  test("rejects tools on responses requests", () => {
+  test("maps flat responses tools to nested chat tools", () => {
+    const chat = responsesToChatRequest({
+      input: "Hi",
+      tools: [
+        {
+          type: "function",
+          name: "echo",
+          description: "Echo it",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+      tool_choice: { type: "function", name: "echo" },
+    });
+    expect(chat.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "echo",
+          description: "Echo it",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+    expect(chat.tool_choice).toEqual({
+      type: "function",
+      function: { name: "echo" },
+    });
+  });
+
+  test("rejects non-function responses tools", () => {
     expect(() =>
       responsesToChatRequest({
         input: "Hi",
-        tools: [{ type: "function", function: { name: "echo" } }],
+        tools: [{ type: "web_search" }],
       }),
-    ).toThrow(/not supported/);
+    ).toThrow(/function tools/);
   });
 
   test("maps instructions and string input", () => {

@@ -16,6 +16,7 @@ const config: AppConfig = {
   CURSOR_AUTO_SESSION: true,
   CURSOR_SESSION_TTL_MS: 60_000,
   CURSOR_SESSION_MAX: 8,
+  CURSOR_TOOL_RESULT_TIMEOUT_MS: 60_000,
 };
 
 const store = new SessionStore();
