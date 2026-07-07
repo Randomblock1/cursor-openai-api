@@ -60,6 +60,8 @@ export class ClientToolCoordinator {
   private pauseResolve: (() => void) | undefined;
   private pauseScheduled = false;
   private pauseTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Serializes emitter writes so a pause never overtakes an in-flight emit. */
+  private emitChain: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly collectWindowMs: number = TOOL_CALL_COLLECT_WINDOW_MS,
@@ -119,12 +121,14 @@ export class ClientToolCoordinator {
       if (entry.emitted) continue;
       entry.emitted = true;
       count += 1;
-      await emitter({
+      const call: ClientToolCall = {
         id: entry.id,
         name: entry.name,
         argumentsJson: entry.argumentsJson,
-      });
+      };
+      this.emitChain = this.emitChain.then(() => emitter(call)).catch(() => {});
     }
+    await this.emitChain;
     return count;
   }
 
@@ -158,8 +162,7 @@ export class ClientToolCoordinator {
       clearTimeout(this.pauseTimer);
       this.pauseTimer = undefined;
     }
-    this.pauseResolve?.();
-    this.pauseResolve = undefined;
+    this.resolvePauseAfterEmits();
   }
 
   private schedulePause(): void {
@@ -167,10 +170,18 @@ export class ClientToolCoordinator {
     this.pauseScheduled = true;
     this.pauseTimer = setTimeout(() => {
       this.pauseTimer = undefined;
-      this.pauseResolve?.();
-      this.pauseResolve = undefined;
+      this.resolvePauseAfterEmits();
     }, this.collectWindowMs);
     this.pauseTimer.unref?.();
+  }
+
+  private resolvePauseAfterEmits(): void {
+    const resolve = this.pauseResolve;
+    if (!resolve) return;
+    this.pauseResolve = undefined;
+    // The pause finishes the response; any tool_calls chunk still being
+    // written must land first or the closed sink would drop it.
+    void this.emitChain.then(resolve, resolve);
   }
 
   private handleExecute(
@@ -191,13 +202,15 @@ export class ClientToolCoordinator {
       const emitter = this.emitter;
       if (emitter) {
         entry.emitted = true;
-        void Promise.resolve(
-          emitter({
-            id: entry.id,
-            name: entry.name,
-            argumentsJson: entry.argumentsJson,
-          }),
-        ).catch(() => {});
+        this.emitChain = this.emitChain
+          .then(() =>
+            emitter({
+              id: entry.id,
+              name: entry.name,
+              argumentsJson: entry.argumentsJson,
+            }),
+          )
+          .catch(() => {});
         // Give sibling parallel calls a beat to arrive, then hand the batch
         // to the client.
         this.schedulePause();

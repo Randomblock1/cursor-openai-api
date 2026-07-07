@@ -122,6 +122,26 @@ describe("responsesToChatRequest", () => {
     });
   });
 
+  test("skips echoed reasoning output items", () => {
+    const messages = responsesInputToMessages([
+      { role: "user", content: "Weather?" },
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [{ type: "summary_text", text: "thinking" }],
+      },
+      {
+        type: "function_call",
+        call_id: "call_abc",
+        name: "get_weather",
+        arguments: "{}",
+      },
+    ]);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.role).toBe("user");
+    expect(messages[1]?.role).toBe("assistant");
+  });
+
   test("maps function_call to assistant tool_calls", () => {
     const messages = responsesInputToMessages([
       {

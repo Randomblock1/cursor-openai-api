@@ -25,8 +25,11 @@ export function planBridgeResume(
 
   for (const message of deltaMessages) {
     if (message.role === "assistant") {
+      // Echoes of what the model already said in the paused response
+      // (/v1/responses clients echo text and tool calls as separate items,
+      // including an empty message item). Only unknown call ids indicate
+      // edited history.
       const toolCalls = message.tool_calls ?? [];
-      if (toolCalls.length === 0) return undefined;
       if (!toolCalls.every((call) => pendingIds.has(call.id))) {
         return undefined;
       }

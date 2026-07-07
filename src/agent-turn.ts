@@ -1,4 +1,10 @@
-import { Agent, type ModelSelection, type Run, type RunResult } from "@cursor/sdk";
+import {
+  Agent,
+  type ModelSelection,
+  type Run,
+  type RunResult,
+  type SDKAgent,
+} from "@cursor/sdk";
 import { beforeInterleavedBoundary, flushAssistantText } from "./assistant-output.js";
 import { abortBridge, type ClientToolBridge } from "./client-tools/bridge.js";
 import {
@@ -41,6 +47,8 @@ interface AgentTurnContext {
   request: ChatCompletionRequest;
   headers?: SessionRequestHeaders;
   abortSignal?: AbortSignal;
+  /** Test/embedder seam: overrides Agent.create for fresh agents. */
+  createAgent?: () => Promise<SDKAgent>;
 }
 
 export interface AgentTurnOptions {
@@ -94,6 +102,9 @@ async function claimBridge(
       prepared.deltaMessages,
       bridge.coordinator.pendingIds(),
     );
+    // Resuming continues the original run: no send happens, so a model /
+    // param change on the follow-up (speed alias, reasoning_effort) cannot
+    // apply until the next fresh send on this agent.
     if (plan) return { bridge, plan };
   }
 
@@ -158,6 +169,10 @@ async function runTurnBody(
       );
       completion = startRunCompletion(run, relay);
     }
+    // A rejection may surface while nothing is racing it (e.g. while this
+    // segment is still setting up, or after it paused); resurface via the
+    // race or the next resume instead of an unhandled rejection.
+    completion.catch(() => {});
 
     unbindAbort = bindRunAbort(run, abortSignal);
     cursorMeta.setRunId(run.id);
@@ -180,10 +195,12 @@ async function runTurnBody(
       : new Promise<void>(() => {});
     await relay.attach({ state, stream: turnStream, onChunk });
 
-    if (resumed && coordinator) {
-      coordinator.provideResults(resumed.plan.results);
-      // Calls the client has not answered yet (parallel stragglers, partial
-      // results) are re-presented in this response instead of streaming.
+    if (coordinator) {
+      if (resumed) coordinator.provideResults(resumed.plan.results);
+      // Surface every call the client has not answered yet: resume
+      // stragglers/partial results, and calls that fired before this segment
+      // armed (without this, an unanswered pre-arm call would hang the turn —
+      // nothing else schedules the pause).
       await coordinator.flushPendingCalls();
       if (coordinator.hasPendingCalls()) coordinator.requestPause();
     }
@@ -201,7 +218,7 @@ async function runTurnBody(
       paused.then(() => ({ kind: "paused" as const })),
     ]);
 
-    relay.detach();
+    await relay.detach();
     coordinator?.detachSegment();
 
     if (outcome.kind === "completed") {
@@ -262,20 +279,8 @@ async function runTurnBody(
       prepared.sessionKey = committedKey;
     }
 
-    if (coordinator && committedKey && prepared.retainAgent) {
-      toolBridges.register(
-        {
-          agentId: prepared.agentId,
-          sessionKey: committedKey,
-          run,
-          relay,
-          coordinator,
-          completion,
-        },
-        config.CURSOR_TOOL_RESULT_TIMEOUT_MS,
-      );
-      runParked = true;
-    } else if (coordinator) {
+    const canPark = Boolean(coordinator && committedKey && prepared.retainAgent);
+    if (coordinator && !canPark) {
       // No session to route the follow-up back to this run (sessions
       // disabled): unblock the SDK and cancel; the follow-up request replays
       // the tool results as prompt text on a fresh run.
@@ -288,9 +293,27 @@ async function runTurnBody(
 
     await sink.complete();
 
+    // Park only after the response reached the client — if the final write
+    // had failed, the catch below must tear the run down, not leave a
+    // registered bridge whose coordinator it already settled.
+    if (coordinator && canPark) {
+      toolBridges.register(
+        {
+          agentId: prepared.agentId,
+          sessionKey: committedKey!,
+          run,
+          relay,
+          coordinator,
+          completion,
+        },
+        config.CURSOR_TOOL_RESULT_TIMEOUT_MS,
+      );
+      runParked = true;
+    }
+
     return { state, meta: cursorMeta, prepared };
   } catch (err) {
-    relay?.detach();
+    await relay?.detach().catch(() => {});
     coordinator?.detachSegment();
     coordinator?.settleAll(
       clientToolErrorResult("The agent turn failed before this tool call was answered."),
@@ -322,7 +345,7 @@ export async function executeAgentTurn(
   const agentOptions = createAgentOptions(config, resolved.sdk);
 
   const prepared = await sessions.prepareChatSession(
-    () => Agent.create(agentOptions),
+    ctx.createAgent ?? (() => Agent.create(agentOptions)),
     request,
     resolved.sdk.id,
     config,

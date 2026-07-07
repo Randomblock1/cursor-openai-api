@@ -400,6 +400,58 @@ describe("native client tool loop", () => {
     expect(fake.lastSend().run.cancelled).toBe(true);
   });
 
+  test("stateless mode (sessions disabled) settles executes and cancels the run", async () => {
+    const proxy = makeProxy({ CURSOR_ENABLE_SESSIONS: false });
+    const fake = createFakeAgent();
+
+    const turn = executeAgentTurn({
+      proxy,
+      request: toolRequest([{ role: "user", content: "Weather in NYC?" }]),
+      createAgent: async () => fake.agent,
+    });
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    const outcome = await turn;
+    // The response still reports the tool call…
+    expect(outcome.state.toolCalls.size).toBe(1);
+    // …but nothing is parked: the execute settles with an error and the run
+    // is cancelled; the follow-up will replay results as prompt text.
+    expect(proxy.toolBridges.size()).toBe(0);
+    expect(await executeResult).toMatchObject({ isError: true });
+    await waitFor(() => fake.lastSend().run.cancelled);
+  });
+
+  test("session eviction tears down the parked bridge", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const firstTurn = executeAgentTurn({
+      proxy,
+      request: toolRequest([{ role: "user", content: "Weather in NYC?" }]),
+    });
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+    await firstTurn;
+    expect(proxy.toolBridges.size()).toBe(1);
+
+    proxy.sessions.clearForTests();
+
+    expect(proxy.toolBridges.size()).toBe(0);
+    expect(await executeResult).toMatchObject({ isError: true });
+    await waitFor(() => fake.lastSend().run.cancelled);
+  });
+
   test("does not register custom tools when the request has none", async () => {
     const proxy = makeProxy();
     const fake = createFakeAgent();

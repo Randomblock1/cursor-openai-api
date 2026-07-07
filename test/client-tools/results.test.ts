@@ -67,10 +67,35 @@ describe("planBridgeResume", () => {
     expect(plan).toBeUndefined();
   });
 
-  test("rejects assistant messages without tool_calls", () => {
+  test("skips assistant echo messages without tool_calls (responses clients)", () => {
+    // /v1/responses clients echo the paused text and an empty message item as
+    // separate assistant messages, distinct from the function_call echoes.
     const plan = planBridgeResume(
       [
-        { role: "assistant", content: "hello" },
+        { role: "assistant", content: "Checking now." },
+        { role: "assistant", content: "" },
+        echo,
+        { role: "tool", tool_call_id: "call_1", content: "Sunny" },
+      ],
+      pending,
+    );
+    expect(plan?.results).toEqual([{ id: "call_1", text: "Sunny" }]);
+  });
+
+  test("rejects assistant echoes carrying unknown tool call ids", () => {
+    const plan = planBridgeResume(
+      [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_other",
+              type: "function",
+              function: { name: "x", arguments: "{}" },
+            },
+          ],
+        },
         { role: "tool", tool_call_id: "call_1", content: "Sunny" },
       ],
       pending,

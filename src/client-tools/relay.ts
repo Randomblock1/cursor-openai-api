@@ -49,8 +49,15 @@ export class InteractionRelay {
     });
   }
 
-  detach(): void {
-    this.target = undefined;
+  /**
+   * Unbind the current target. Queued through the delivery chain so an
+   * in-flight event finishes delivering to the old segment instead of being
+   * dropped between segments.
+   */
+  detach(): Promise<void> {
+    return this.enqueue(async () => {
+      this.target = undefined;
+    });
   }
 
   handleUpdate(update: InteractionUpdate): Promise<void> {

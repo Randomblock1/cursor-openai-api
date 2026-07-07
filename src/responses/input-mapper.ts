@@ -33,6 +33,12 @@ function preserveMessageContent(
 function inputItemToMessages(item: ResponsesInputItem): ChatMessage[] {
   const itemType = item.type;
 
+  // Clients following the documented `input = input.concat(response.output)`
+  // loop echo reasoning output items back; they carry no replayable content.
+  if (itemType === "reasoning") {
+    return [];
+  }
+
   if (itemType === "function_call_output") {
     if (!item.call_id?.trim()) {
       throw new ProxyError(

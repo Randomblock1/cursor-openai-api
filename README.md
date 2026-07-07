@@ -340,6 +340,8 @@ Three modes:
    - If no follow-up arrives within `CURSOR_TOOL_RESULT_TIMEOUT_MS` (default 10 min), the paused run is cancelled.
    - If the paused run can't be resumed (sessions disabled, proxy restarted, or the follow-up added new user input), the proxy falls back to a fresh send that replays the tool results as prompt text — the loop still works, just without native continuity.
    - Function tools only; non-function tool definitions are rejected. `tool_choice: "required"` / `{type:"function"}` are advisory (prompt directives), not enforced.
+   - Responses that pause on tool calls omit `usage` (the SDK only reports usage when a run's turn ends); the response that completes the run reports usage for the whole run, including the paused segments.
+   - Model/param changes (`*-slow`/`*-fast`, `reasoning_effort`) on a follow-up that resumes a paused run take effect on the next fresh send, not mid-run.
    - `CURSOR_EMIT_TOOL_CALLS` is ignored for these requests (Cursor-internal tool events, including the custom-tool MCP round-trips, are not forwarded).
    - `POST /v1/responses` also supports function tools: flat `{type:"function", name, parameters}` definitions and `function_call` / `function_call_output` items map onto the same loop.
 
