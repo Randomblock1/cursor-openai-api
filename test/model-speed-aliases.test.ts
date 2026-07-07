@@ -18,7 +18,6 @@ import {
 import { mergeModelParams, resolveModel } from "../src/model.js";
 import { listModels } from "../src/models.js";
 import { createStreamState } from "../src/stream.js";
-import { resolveTurnStreamContext } from "../src/turn-stream.js";
 import {
   composerCatalogEntry,
   noFastCatalogEntry,
@@ -248,7 +247,6 @@ describe("buildRelaySendOptions", () => {
     };
     const resolved = await resolveModel(request, config, false);
     const state = createStreamState(resolved.clientModel);
-    resolveTurnStreamContext(request, config);
 
     const options = buildRelaySendOptions(new InteractionRelay(), resolved.sdk);
 

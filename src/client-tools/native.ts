@@ -44,6 +44,16 @@ function mintCallId(sdkToolCallId: string | undefined): string {
   return makeId("call");
 }
 
+// An emit failure means the response write failed (usually a client that went
+// away mid-stream); the chain must keep sequencing, but the failure should be
+// visible when diagnosing dropped tool_calls chunks.
+function logEmitFailure(err: unknown): void {
+  console.warn(
+    "[cursor-openai-api] client tool call emit failed",
+    err instanceof Error ? err.message : err,
+  );
+}
+
 /**
  * Bridges Cursor SDK `customTools` callbacks onto the OpenAI client-executed
  * tool protocol. Each `execute` records a pending call and returns a promise
@@ -126,7 +136,9 @@ export class ClientToolCoordinator {
         name: entry.name,
         argumentsJson: entry.argumentsJson,
       };
-      this.emitChain = this.emitChain.then(() => emitter(call)).catch(() => {});
+      this.emitChain = this.emitChain
+        .then(() => emitter(call))
+        .catch(logEmitFailure);
     }
     await this.emitChain;
     return count;
@@ -210,7 +222,7 @@ export class ClientToolCoordinator {
               argumentsJson: entry.argumentsJson,
             }),
           )
-          .catch(() => {});
+          .catch(logEmitFailure);
         // Give sibling parallel calls a beat to arrive, then hand the batch
         // to the client.
         this.schedulePause();
