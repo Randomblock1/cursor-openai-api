@@ -172,6 +172,18 @@ function responsesToolChoiceToChat(
 export function responsesToChatRequest(
   request: ResponsesRequest,
 ): ChatCompletionRequest {
+  // The proxy is stateless: it never stores responses, so a store-based
+  // continuation would silently answer without any prior context (and leave a
+  // paused client-tool run waiting out its timeout). Fail loudly instead.
+  if (request.previous_response_id != null) {
+    throw new ProxyError(
+      "previous_response_id is not supported: this proxy does not store responses. Resend the full conversation via `input` (input = input.concat(response.output)).",
+      400,
+      "invalid_request_error",
+      "previous_response_id",
+    );
+  }
+
   const messages: ChatMessage[] = [];
 
   if (request.instructions?.trim()) {

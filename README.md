@@ -343,7 +343,7 @@ Three modes:
    - Responses that pause on tool calls omit `usage` (the SDK only reports usage when a run's turn ends); the response that completes the run reports usage for the whole run, including the paused segments.
    - Model/param changes (`*-slow`/`*-fast`, `reasoning_effort`) on a follow-up that resumes a paused run take effect on the next fresh send, not mid-run.
    - `CURSOR_EMIT_TOOL_CALLS` is ignored for these requests (Cursor-internal tool events, including the custom-tool MCP round-trips, are not forwarded).
-   - `POST /v1/responses` also supports function tools: flat `{type:"function", name, parameters}` definitions and `function_call` / `function_call_output` items map onto the same loop.
+   - `POST /v1/responses` also supports function tools: flat `{type:"function", name, parameters}` definitions and `function_call` / `function_call_output` items map onto the same loop. `previous_response_id` is rejected (400) — the proxy does not store responses, so continue by resending the full conversation (`input = input.concat(response.output)`).
 
 3. **Cursor tool visibility** — `CURSOR_EMIT_TOOL_CALLS=true` (or `cursor_emit_tool_calls: true`) only when **not** in client tool loop. Surfaces Cursor SDK `tool-call-*` deltas as best-effort OpenAI `tool_calls` (Read, Shell, etc.). Usually **not** what you want alongside OpenCode's own `tools` array.
 

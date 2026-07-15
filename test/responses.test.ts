@@ -71,6 +71,15 @@ describe("responsesToChatRequest", () => {
     ).toThrow(/function tools/);
   });
 
+  test("rejects previous_response_id continuations", () => {
+    expect(() =>
+      responsesToChatRequest({
+        input: [{ type: "function_call_output", call_id: "call_1", output: "Sunny" }],
+        previous_response_id: "resp_123",
+      }),
+    ).toThrow(/previous_response_id/);
+  });
+
   test("maps instructions and string input", () => {
     const chat = responsesToChatRequest({
       model: "composer-2",

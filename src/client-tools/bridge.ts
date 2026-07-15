@@ -10,7 +10,6 @@ import type { InteractionRelay } from "./relay.js";
  */
 export interface ClientToolBridge {
   agentId: string;
-  sessionKey?: string;
   run: Run;
   relay: InteractionRelay;
   coordinator: ClientToolCoordinator;

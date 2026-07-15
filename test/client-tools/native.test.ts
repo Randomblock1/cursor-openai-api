@@ -145,4 +145,29 @@ describe("ClientToolCoordinator", () => {
 
     expect(calls[0]?.id).toBe("call_toolu_abc123");
   });
+
+  test("mints distinct ids when sanitized SDK tool call ids collide", async () => {
+    const coordinator = new ClientToolCoordinator(5);
+    const tools = coordinator.buildCustomTools(specs);
+    const { calls, emit } = collector();
+    void coordinator.armSegment(emit);
+
+    // Both sanitize to "call_toolu_abc123"; the second must not overwrite the
+    // first pending entry (its settle would be lost and the run would hang).
+    const a = tools.echo!.execute({}, { toolCallId: "toolu_abc/123" });
+    const b = tools.echo!.execute({}, { toolCallId: "toolu_abc.123" });
+    await coordinator.flushPendingCalls();
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.id).toBe("call_toolu_abc123");
+    expect(calls[1]?.id).not.toBe(calls[0]?.id);
+    expect(coordinator.pendingIds().size).toBe(2);
+
+    coordinator.provideResults([
+      { id: calls[0]!.id, text: "first" },
+      { id: calls[1]!.id, text: "second" },
+    ]);
+    expect(await a).toBe("first");
+    expect(await b).toBe("second");
+  });
 });

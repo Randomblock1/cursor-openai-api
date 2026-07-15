@@ -97,7 +97,16 @@ async function claimBridge(
   const bridge = ctx.proxy.toolBridges.take(prepared.agentId);
   if (!bridge) return undefined;
 
-  if (bridge.run.status === "running") {
+  if (bridge.run.status !== "running") {
+    // The run died backend-side while the client was executing its tools; the
+    // fallback still answers the follow-up, but the operator should see why
+    // the model's native context was lost.
+    console.warn(
+      `[cursor-openai-api] parked client-tool run ${bridge.run.id} on agent ${bridge.agentId} ` +
+        `ended with status "${bridge.run.status}" before the tool results arrived; ` +
+        "replaying the follow-up on a fresh send",
+    );
+  } else {
     const plan = planBridgeResume(
       prepared.deltaMessages,
       bridge.coordinator.pendingIds(),
@@ -133,6 +142,21 @@ async function runTurnBody(
   );
   const sink = createStreamSink(options.stream?.write, state, cursorMeta);
   const onChunk = (chunk: ChatCompletionChunk) => sink.writeDelta(chunk);
+
+  const commitSession = (): string | undefined => {
+    cursorMeta.mergeFromStream(state);
+    const committedKey = sessions.commitChatSession(
+      prepared,
+      request,
+      resolved.sdk.id,
+      config,
+    );
+    if (committedKey) {
+      cursorMeta.setSessionId(committedKey);
+      prepared.sessionKey = committedKey;
+    }
+    return committedKey;
+  };
 
   const resumed = await claimBridge(ctx, prepared);
 
@@ -239,17 +263,7 @@ async function runTurnBody(
         throw new ProxyError("Agent run was cancelled", 499, "server_error");
       }
 
-      cursorMeta.mergeFromStream(state);
-      const committedKey = sessions.commitChatSession(
-        prepared,
-        request,
-        resolved.sdk.id,
-        config,
-      );
-      if (committedKey) {
-        cursorMeta.setSessionId(committedKey);
-        prepared.sessionKey = committedKey;
-      }
+      commitSession();
 
       await sink.complete();
 
@@ -267,17 +281,7 @@ async function runTurnBody(
     const flushed = flushAssistantText(state, turnStream.policy);
     if (flushed) await onChunk(flushed);
 
-    cursorMeta.mergeFromStream(state);
-    const committedKey = sessions.commitChatSession(
-      prepared,
-      request,
-      resolved.sdk.id,
-      config,
-    );
-    if (committedKey) {
-      cursorMeta.setSessionId(committedKey);
-      prepared.sessionKey = committedKey;
-    }
+    const committedKey = commitSession();
 
     const canPark = Boolean(coordinator && committedKey && prepared.retainAgent);
     if (coordinator && !canPark) {
@@ -300,7 +304,6 @@ async function runTurnBody(
       toolBridges.register(
         {
           agentId: prepared.agentId,
-          sessionKey: committedKey!,
           run,
           relay,
           coordinator,

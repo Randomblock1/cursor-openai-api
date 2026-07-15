@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { InteractionUpdate, SDKAgent } from "@cursor/sdk";
 import { executeAgentTurn } from "../src/agent-turn.js";
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatMessage } from "../src/openai.js";
 import { createProxyContext, type ProxyContext } from "../src/proxy-context.js";
+import { responsesToChatRequest } from "../src/responses.js";
 import { testProxyConfig } from "./helpers/test-config.js";
 
 interface FakeSend {
@@ -84,6 +85,11 @@ function createFakeAgent(agentId = "agent-1") {
         releaseStream();
         resolveWait({ id, status: "finished", result });
       });
+      Reflect.set(send, "fail", (message: string) => {
+        run.status = "error";
+        releaseStream();
+        resolveWait({ id, status: "error", result: message });
+      });
       sends.push(send);
       return run;
     },
@@ -100,6 +106,10 @@ function createFakeAgent(agentId = "agent-1") {
     finish: (result: string) =>
       (sends[sends.length - 1] as never as { finish: (r: string) => void }).finish(
         result,
+      ),
+    fail: (message: string) =>
+      (sends[sends.length - 1] as never as { fail: (m: string) => void }).fail(
+        message,
       ),
   };
 }
@@ -375,6 +385,80 @@ describe("native client tool loop", () => {
     expect(outcome3.finalText).toBe("NYC sunny, LA cloudy.");
   });
 
+  test("falls back to a fresh send when the parked run dies before results arrive", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const userMessage: ChatMessage = { role: "user", content: "Weather in NYC?" };
+    const firstTurn = executeAgentTurn({
+      proxy,
+      request: toolRequest([userMessage]),
+    });
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    const outcome1 = await firstTurn;
+    const emitted = [...outcome1.state.toolCalls.values()][0]!;
+    expect(proxy.toolBridges.size()).toBe(1);
+
+    // The run dies backend-side while the client is executing the tool.
+    fake.fail("backend connection lost");
+
+    const warnings: string[] = [];
+    const warnSpy = spyOn(console, "warn").mockImplementation(
+      (...args: unknown[]) => void warnings.push(args.map(String).join(" ")),
+    );
+    try {
+      // Even a valid tool-result delta cannot resume a dead run.
+      const followUp: ChatMessage[] = [
+        userMessage,
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: emitted.id,
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"NYC"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: emitted.id, content: "Sunny" },
+      ];
+      const secondTurn = executeAgentTurn({
+        proxy,
+        request: toolRequest(followUp),
+      });
+
+      await waitFor(() => fake.sends.length === 2);
+      expect(await executeResult).toMatchObject({ isError: true });
+      expect(proxy.toolBridges.size()).toBe(0);
+
+      // Fresh send replays the unconsumed delta as prompt text.
+      const payload = fake.lastSend().payload;
+      expect(payload as string).toContain("Sunny");
+
+      await fake.emit({ type: "text-delta", text: "It is sunny." } as never);
+      await fake.emit({ type: "turn-ended" } as never);
+      fake.finish("It is sunny.");
+      const outcome2 = await secondTurn;
+      expect(outcome2.finalText).toBe("It is sunny.");
+
+      // The lost run is surfaced to the operator, not silently discarded.
+      expect(
+        warnings.some((line) => line.includes('ended with status "error"')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("cancels the parked run when the tool-result timeout elapses", async () => {
     const proxy = makeProxy({ CURSOR_TOOL_RESULT_TIMEOUT_MS: 30 });
     const fake = createFakeAgent();
@@ -474,5 +558,83 @@ describe("native client tool loop", () => {
     fake.finish("hi");
     const outcome = await turn;
     expect(outcome.finalText).toBe("hi");
+  });
+});
+
+describe("responses client tool loop", () => {
+  const flatTools = [
+    {
+      type: "function",
+      name: "get_weather",
+      description: "Get the weather",
+      parameters: weatherTool.function.parameters,
+    },
+  ];
+
+  test("pauses and resumes end-to-end through /v1/responses shapes", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const firstTurn = executeAgentTurn({
+      proxy,
+      request: responsesToChatRequest({
+        model: "composer-2.5",
+        input: "Weather in NYC?",
+        tools: flatTools,
+      }),
+    });
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    expect(customTools?.get_weather).toBeDefined();
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      { toolCallId: "sdk-tool-1" },
+    ) as Promise<unknown>;
+
+    const outcome1 = await firstTurn;
+    const emitted = [...outcome1.state.toolCalls.values()][0]!;
+    expect(proxy.toolBridges.size()).toBe(1);
+
+    // The client follows the documented loop — input = input.concat(
+    // response.output) — echoing reasoning and function_call output items,
+    // then appending the function_call_output. The mapped call_id must
+    // round-trip into the paused run's pending ids.
+    const secondTurn = executeAgentTurn({
+      proxy,
+      request: responsesToChatRequest({
+        model: "composer-2.5",
+        input: [
+          { type: "message", role: "user", content: "Weather in NYC?" },
+          { type: "reasoning", summary: [] },
+          {
+            type: "function_call",
+            call_id: emitted.id,
+            name: "get_weather",
+            arguments: emitted.arguments,
+          },
+          {
+            type: "function_call_output",
+            call_id: emitted.id,
+            output: "Sunny, 25C",
+          },
+        ],
+        tools: flatTools,
+      }),
+    });
+
+    // The pending execute resolves and the original run resumes — no new send.
+    expect(await executeResult).toBe("Sunny, 25C");
+    expect(fake.sends.length).toBe(1);
+    expect(proxy.toolBridges.size()).toBe(0);
+
+    await fake.emit({ type: "text-delta", text: "It is sunny in NYC." } as never);
+    await fake.emit({ type: "turn-ended" } as never);
+    fake.finish("It is sunny in NYC.");
+
+    const outcome2 = await secondTurn;
+    expect(outcome2.finalText).toBe("It is sunny in NYC.");
+    expect(outcome2.state.toolCalls.size).toBe(0);
   });
 });

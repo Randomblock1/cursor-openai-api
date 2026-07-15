@@ -196,6 +196,13 @@ export class ClientToolCoordinator {
     void this.emitChain.then(resolve, resolve);
   }
 
+  // Sanitization/truncation can collapse two distinct SDK ids into one minted
+  // id; overwriting a pending entry would lose its settle and wedge the run.
+  private uniqueCallId(sdkToolCallId: string | undefined): string {
+    const minted = mintCallId(sdkToolCallId);
+    return this.pending.has(minted) ? makeId("call") : minted;
+  }
+
   private handleExecute(
     name: string,
     args: Record<string, SDKJsonValue> | undefined,
@@ -203,7 +210,7 @@ export class ClientToolCoordinator {
   ): Promise<SDKCustomToolResult> {
     return new Promise<SDKCustomToolResult>((resolve) => {
       const entry: PendingEntry = {
-        id: mintCallId(sdkToolCallId),
+        id: this.uniqueCallId(sdkToolCallId),
         name,
         argumentsJson: JSON.stringify(args ?? {}),
         emitted: false,
