@@ -24,9 +24,18 @@ export interface PreparedChatSession {
   retainAgent: boolean;
 }
 
+export interface SessionStoreOptions {
+  /** Fires when the cache disposes an agent (eviction/invalidation/replacement). */
+  onAgentDisposed?: (agentId: string) => void;
+}
+
 export class SessionStore {
-  private readonly cache = new SessionCache();
+  private readonly cache: SessionCache;
   private readonly turnQueue = new AgentTurnQueue();
+
+  constructor(options?: SessionStoreOptions) {
+    this.cache = new SessionCache(options?.onAgentDisposed);
+  }
 
   findMatchingSessionEntry(
     modelId: string,

@@ -56,16 +56,24 @@ export function deltaMessagesFromSession(
   return messages.slice(entry.messageCount);
 }
 
-function disposeSessionAgent(entry: SessionEntry): void {
-  const dispose = entry.agent[Symbol.asyncDispose];
-  if (typeof dispose === "function") {
-    void dispose.call(entry.agent).catch(() => {});
-  }
-}
-
 export class SessionCache {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly sessionKeysByModel = new Map<string, Set<string>>();
+
+  /**
+   * @param onAgentDisposed invoked whenever the cache disposes an agent
+   * (eviction, invalidation, replacement) so external state keyed by agent —
+   * e.g. a parked client-tool run — can be torn down with it.
+   */
+  constructor(private readonly onAgentDisposed?: (agentId: string) => void) {}
+
+  private disposeSessionAgent(entry: SessionEntry): void {
+    const dispose = entry.agent[Symbol.asyncDispose];
+    if (typeof dispose === "function") {
+      void dispose.call(entry.agent).catch(() => {});
+    }
+    this.onAgentDisposed?.(entry.agentId);
+  }
 
   findAutoMatch(
     modelId: string,
@@ -130,7 +138,7 @@ export class SessionCache {
   private save(key: string, entry: SessionEntry): void {
     const previous = this.sessions.get(key);
     if (previous) {
-      if (previous.agent !== entry.agent) disposeSessionAgent(previous);
+      if (previous.agent !== entry.agent) this.disposeSessionAgent(previous);
       this.untrackSessionKey(key, previous.modelId);
     }
 
@@ -146,7 +154,7 @@ export class SessionCache {
   invalidate(key: string): void {
     const entry = this.sessions.get(key);
     if (!entry) return;
-    disposeSessionAgent(entry);
+    this.disposeSessionAgent(entry);
     this.sessions.delete(key);
     this.untrackSessionKey(key, entry.modelId);
   }
@@ -166,7 +174,7 @@ export class SessionCache {
 
   clear(): void {
     for (const entry of this.sessions.values()) {
-      disposeSessionAgent(entry);
+      this.disposeSessionAgent(entry);
     }
     this.sessions.clear();
     this.sessionKeysByModel.clear();
@@ -177,7 +185,7 @@ export class SessionCache {
 
     for (const [key, entry] of this.sessions) {
       if (now - entry.lastAccess <= ttl) continue;
-      disposeSessionAgent(entry);
+      this.disposeSessionAgent(entry);
       this.sessions.delete(key);
       this.untrackSessionKey(key, entry.modelId);
     }
@@ -193,7 +201,7 @@ export class SessionCache {
       const next = oldestFirst.shift();
       if (!next) return;
       const [key, entry] = next;
-      disposeSessionAgent(entry);
+      this.disposeSessionAgent(entry);
       this.sessions.delete(key);
       this.untrackSessionKey(key, entry.modelId);
     }

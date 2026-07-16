@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { createClientToolTextHandler } from "../src/client-tools/text-handler.js";
 import type { ClientToolSpec } from "../src/client-tools/types.js";
 import { chunksFromInteractionUpdate } from "../src/interaction-delta.js";
 import { createStreamState } from "../src/stream.js";
@@ -10,17 +9,10 @@ import {
 } from "../src/turn-stream.js";
 
 function streamContext(policy: TurnPolicy, specs?: ClientToolSpec[]): TurnStreamContext {
-  if (!specs?.length) {
-    return { policy, assistantText: defaultAssistantTextStream() };
-  }
-  const text = createClientToolTextHandler(specs);
   return {
     policy,
-    clientToolSpecs: specs,
-    assistantText: {
-      pushDelta: text.pushText,
-      flushTurn: text.flush,
-    },
+    ...(specs?.length ? { clientToolSpecs: specs } : {}),
+    assistantText: defaultAssistantTextStream(),
   };
 }
 
@@ -287,30 +279,21 @@ describe("chunksFromInteractionUpdate", () => {
     expect(reasoning[1]?.choices[0]?.delta.reasoning_content).toBe("planning");
   });
 
-  test("parses client tool markers from text-delta in client tool loop", () => {
+  test("streams text verbatim in client tool loop (no marker parsing)", () => {
     const state = createStreamState("composer-2");
-    const marker = [
-      "Checking.\n",
-      "<|tool_calls_begin|><|tool_call_begin|>\n",
-      "Glob\n",
-      "<|tool_sep|>glob_pattern\n",
-      "*\n",
-      "<|tool_call_end|><|tool_calls_end|>",
-    ].join("");
-
     const chunks = [
       ...chunksFromInteractionUpdate(
-        { type: "text-delta", text: marker },
+        { type: "text-delta", text: "Checking the pattern now." },
         state,
         clientToolLiveStream,
       ),
     ];
 
-    expect(chunks[0]?.choices[0]?.delta.content).toBe("Checking.\n");
-    expect(chunks[1]?.choices[0]?.delta.tool_calls?.[0]?.function?.name).toBe(
-      "glob",
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.choices[0]?.delta.content).toBe(
+      "Checking the pattern now.",
     );
-    expect(state.toolCalls.size).toBe(1);
+    expect(state.toolCalls.size).toBe(0);
   });
 
   test("suppresses SDK tool-call events in client tool loop", () => {

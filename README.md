@@ -41,6 +41,8 @@ npm install
 | `CURSOR_AUTO_SESSION` | no | `true` | Reuse agents when a request extends a prior in-memory conversation (for clients like AI SDK that resend full `messages[]`) |
 | `CURSOR_SESSION_TTL_MS` | no | `1800000` | Evict idle cached agents after this many ms |
 | `CURSOR_SESSION_MAX` | no | `64` | Max concurrent cached agents |
+| `CURSOR_TOOL_RESULT_TIMEOUT_MS` | no | `600000` | Cancel a run paused on client tool calls if the follow-up request with tool results never arrives (see [Tool calls](#tool-calls)) |
+| `CURSOR_SANDBOX` | no | `false` | Run local agents with the Cursor SDK sandbox enabled: writes restricted to the workspace, privileged shell commands denied, network denied by default (allowlist hosts via `.cursor/sandbox.json`) |
 | `DEBUG_STREAM` | no | `false` | Include agent status events as annotated `content` in streams |
 
 ## Run
@@ -238,7 +240,7 @@ export CURSOR_ASSISTANT_TEXT_MODE=preamble-as-reasoning
 export CURSOR_EMIT_TOOL_CALLS=false
 ```
 
-Client tool loop (OpenCode's own `tools` array) uses the **same** assistant text mode for visible text parsed from the stream — set `preamble-as-reasoning` there too if you want ordering fixes during tool turns.
+Client tool loop (OpenCode's own `tools` array) uses the **same** assistant text mode for visible text streamed during tool turns — set `preamble-as-reasoning` there too if you want ordering fixes during tool turns.
 
 ### Recommended setup
 
@@ -330,17 +332,22 @@ Three modes:
 
 1. **Plain chat** (default) — `CURSOR_EMIT_TOOL_CALLS=false` and no `tools` on the request. Cursor may use its own tools in `CURSOR_CWD`, but the proxy does not surface them; `finish_reason` stays `stop` and only assistant text/reasoning is returned.
 
-2. **Client tool loop** (OpenCode / AI SDK) — When the request includes a non-empty `tools` array and `tool_choice` is not `"none"`, the proxy enters **client tool loop** mode automatically:
-   - Instructs the model to emit Composer tool-call markers for **your** tool names.
-   - Parses those markers from the text stream and returns OpenAI `tool_calls` with `finish_reason: "tool_calls"`.
-   - Supports function tools only; non-function tool definitions are rejected.
-   - Your client executes tools locally and resends `tool` / `assistant.tool_calls` messages; the proxy does not run client tool handlers.
-   - `CURSOR_EMIT_TOOL_CALLS` is ignored for these requests (Cursor-internal tool events are not forwarded).
-   - `POST /v1/responses` with `tools` is rejected (use chat completions).
+2. **Client tool loop** (OpenCode / AI SDK) — When the request includes a non-empty `tools` array and `tool_choice` is not `"none"`, the proxy registers your function tools as **native Cursor SDK custom tools** (`customTools`, SDK ≥ 1.0.18). The model sees them as first-class tools on the synthetic `custom-user-tools` MCP server — no marker protocol, no output parsing:
+   - Each OpenAI function spec (`name`, `description`, `parameters` JSON Schema) is passed to `agent.send()` as a per-send custom tool.
+   - When the model invokes one, the proxy captures the call inside the SDK `execute` callback, emits an OpenAI `tool_calls` delta, and finishes the response with `finish_reason: "tool_calls"` — while the Cursor run stays alive, blocked on the pending tool result.
+   - Your client executes the tool and resends the conversation with the `tool` result message. The proxy matches the follow-up to the paused run (sessions/auto-session), feeds the result to the waiting `execute` callback, and streams the run's continuation into the new response. The model keeps its full native context, including its own reasoning.
+   - Parallel tool calls are batched (a short collection window after the first call); partial results are supported — unanswered calls are re-presented on the next response.
+   - If no follow-up arrives within `CURSOR_TOOL_RESULT_TIMEOUT_MS` (default 10 min), the paused run is cancelled.
+   - If the paused run can't be resumed (sessions disabled, proxy restarted, or the follow-up added new user input), the proxy falls back to a fresh send that replays the tool results as prompt text — the loop still works, just without native continuity.
+   - Function tools only; non-function tool definitions are rejected. `tool_choice: "required"` / `{type:"function"}` are advisory (prompt directives), not enforced.
+   - Responses that pause on tool calls omit `usage` (the SDK only reports usage when a run's turn ends); the response that completes the run reports usage for the whole run, including the paused segments.
+   - Model/param changes (`*-slow`/`*-fast`, `reasoning_effort`) on a follow-up that resumes a paused run take effect on the next fresh send, not mid-run.
+   - `CURSOR_EMIT_TOOL_CALLS` is ignored for these requests (Cursor-internal tool events, including the custom-tool MCP round-trips, are not forwarded).
+   - `POST /v1/responses` also supports function tools: flat `{type:"function", name, parameters}` definitions and `function_call` / `function_call_output` items map onto the same loop. `previous_response_id` is rejected (400) — the proxy does not store responses, so continue by resending the full conversation (`input = input.concat(response.output)`).
 
 3. **Cursor tool visibility** — `CURSOR_EMIT_TOOL_CALLS=true` (or `cursor_emit_tool_calls: true`) only when **not** in client tool loop. Surfaces Cursor SDK `tool-call-*` deltas as best-effort OpenAI `tool_calls` (Read, Shell, etc.). Usually **not** what you want alongside OpenCode's own `tools` array.
 
-**Note:** The SDK may still run Cursor's built-in tools in the workspace when the model ignores the client-tool prompt. The HTTP response only exposes **client** `tool_calls`. If you see unexpected file changes during client tool loops, treat that as a known limitation until a stricter SDK guard exists.
+**Note:** The SDK may still run Cursor's built-in tools in the workspace during client tool loops — the prompt steers the model toward your tools, and `CURSOR_SANDBOX=true` constrains what built-in tools can touch, but there is no hard SDK switch to disable them. The HTTP response only exposes **client** `tool_calls`.
 
 - **Usage fields**: Mapped from Cursor `turn-ended` deltas (`onDelta` on `agent.send()`). `prompt_tokens` is total input-side tokens (input + cache read + cache write); `prompt_tokens_details.cached_tokens` reports cache reads per the OpenAI usage schema. Omitted when the SDK does not report usage for a turn.
 - **DEBUG_STREAM**: Status events only (`[status] ...` in `content`). Thinking uses `reasoning_content`, not `DEBUG_STREAM`.

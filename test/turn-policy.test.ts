@@ -16,6 +16,8 @@ const baseConfig = {
   CURSOR_AUTO_SESSION: true,
   CURSOR_SESSION_TTL_MS: 1,
   CURSOR_SESSION_MAX: 1,
+  CURSOR_TOOL_RESULT_TIMEOUT_MS: 60_000,
+  CURSOR_SANDBOX: false,
 } satisfies AppConfig;
 
 describe("resolveTurnPolicy", () => {

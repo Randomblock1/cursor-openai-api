@@ -1,8 +1,45 @@
 import { contentToText } from "./content-parts.js";
-import { buildClientToolPromptSections } from "./client-tools/prompt.js";
+import { parseToolChoice } from "./client-tools/request.js";
 import type { ClientToolSpec } from "./client-tools/types.js";
 import type { ChatMessage } from "./openai.js";
 import type { PromptExtras } from "./messages.js";
+
+const CLIENT_TOOLS_DIRECTIVE = [
+  "You are serving an OpenAI-compatible API request through a proxy.",
+  'The API client registered the tools listed below. They are available to you as native tools on the "custom-user-tools" MCP server; the client executes each call and returns the result.',
+  "Prefer these client tools over your built-in file, search, and shell tools whenever they can accomplish the request, and do not modify workspace files unless the user explicitly asks you to.",
+  "Never claim a listed tool is unavailable, and never describe a tool call in prose instead of calling it.",
+  "Tool results from earlier turns may appear in the conversation below as `## TOOL` messages.",
+].join("\n");
+
+function clientToolChoiceLines(
+  toolChoice: PromptExtras["toolChoice"],
+): string[] {
+  const parsed = parseToolChoice(toolChoice);
+  if (parsed === "required") {
+    return ["You must call at least one of the client tools before answering."];
+  }
+  if (typeof parsed === "object" && parsed.type === "function") {
+    return [`Use the ${parsed.functionName} tool to answer this request.`];
+  }
+  return [];
+}
+
+function buildClientToolSections(
+  messages: ChatMessage[],
+  specs: ClientToolSpec[],
+  toolChoice: PromptExtras["toolChoice"],
+): string[] {
+  return [
+    CLIENT_TOOLS_DIRECTIVE,
+    "",
+    `Client tools: ${specs.map((spec) => spec.name).join(", ")}`,
+    ...clientToolChoiceLines(toolChoice),
+    "",
+    "Conversation:",
+    ...messages.map(formatMessage),
+  ];
+}
 
 function formatToolCalls(message: ChatMessage): string {
   if (!message.tool_calls?.length) return "";
@@ -41,7 +78,7 @@ export function serializeMessagesToPrompt(
   clientToolSpecs?: ClientToolSpec[],
 ): string {
   if (clientToolSpecs?.length) {
-    const sections = buildClientToolPromptSections(
+    const sections = buildClientToolSections(
       messages,
       clientToolSpecs,
       extras?.toolChoice,

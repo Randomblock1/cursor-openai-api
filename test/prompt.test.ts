@@ -67,8 +67,50 @@ describe("serializeMessagesToPrompt", () => {
       },
       [{ name: "foo" }],
     );
-    expect(prompt).toContain("CLIENT TOOL INVENTORY");
-    expect(prompt).toContain("tool_calls_begin");
+    expect(prompt).toContain("custom-user-tools");
+    expect(prompt).toContain("Client tools: foo");
     expect(prompt).not.toContain("## CLIENT_TOOLS");
+    expect(prompt).not.toContain("tool_calls_begin");
+  });
+
+  test("client tool loop prompt carries tool_choice directives", () => {
+    const required = serializeMessagesToPrompt(
+      [{ role: "user", content: "Hi" }],
+      { toolChoice: "required" },
+      [{ name: "foo" }],
+    );
+    expect(required).toContain("must call at least one");
+
+    const named = serializeMessagesToPrompt(
+      [{ role: "user", content: "Hi" }],
+      { toolChoice: { type: "function", function: { name: "foo" } } },
+      [{ name: "foo" }],
+    );
+    expect(named).toContain("Use the foo tool");
+  });
+
+  test("client tool loop prompt serializes tool results for replay", () => {
+    const prompt = serializeMessagesToPrompt(
+      [
+        { role: "user", content: "Weather?" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"NYC"}' },
+            },
+          ],
+        },
+        { role: "tool", content: "Sunny", tool_call_id: "call_1" },
+      ],
+      {},
+      [{ name: "get_weather" }],
+    );
+    expect(prompt).toContain("tool_call id=call_1");
+    expect(prompt).toContain("## TOOL");
+    expect(prompt).toContain("Sunny");
   });
 });

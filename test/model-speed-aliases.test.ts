@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { buildSendOptions } from "../src/agent-stream.js";
+import {
+  buildRelaySendOptions,
+  InteractionRelay,
+} from "../src/client-tools/relay.js";
 import {
   clearModelCatalogCacheForTests,
   seedModelCatalogForTests,
@@ -15,7 +18,6 @@ import {
 import { mergeModelParams, resolveModel } from "../src/model.js";
 import { listModels } from "../src/models.js";
 import { createStreamState } from "../src/stream.js";
-import { resolveTurnStreamContext } from "../src/turn-stream.js";
 import {
   composerCatalogEntry,
   noFastCatalogEntry,
@@ -236,7 +238,7 @@ describe("resolveModel speed aliases", () => {
   });
 });
 
-describe("buildSendOptions", () => {
+describe("buildRelaySendOptions", () => {
   test("includes per-send SDK model from resolved alias", async () => {
     seedModelCatalogForTests("test-key", [composerCatalogEntry]);
     const request = {
@@ -245,9 +247,8 @@ describe("buildSendOptions", () => {
     };
     const resolved = await resolveModel(request, config, false);
     const state = createStreamState(resolved.clientModel);
-    const stream = resolveTurnStreamContext(request, config);
 
-    const options = buildSendOptions(state, stream, resolved.sdk);
+    const options = buildRelaySendOptions(new InteractionRelay(), resolved.sdk);
 
     expect(options.model).toEqual({
       id: "composer-2.5",
@@ -255,6 +256,7 @@ describe("buildSendOptions", () => {
     });
     expect(state.model).toBe("composer-2.5-slow");
     expect(typeof options.onDelta).toBe("function");
+    expect("local" in options).toBe(false);
   });
 });
 

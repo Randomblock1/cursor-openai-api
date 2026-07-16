@@ -33,13 +33,51 @@ describe("responsesRequestSchema", () => {
 });
 
 describe("responsesToChatRequest", () => {
-  test("rejects tools on responses requests", () => {
+  test("maps flat responses tools to nested chat tools", () => {
+    const chat = responsesToChatRequest({
+      input: "Hi",
+      tools: [
+        {
+          type: "function",
+          name: "echo",
+          description: "Echo it",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+      tool_choice: { type: "function", name: "echo" },
+    });
+    expect(chat.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "echo",
+          description: "Echo it",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+    expect(chat.tool_choice).toEqual({
+      type: "function",
+      function: { name: "echo" },
+    });
+  });
+
+  test("rejects non-function responses tools", () => {
     expect(() =>
       responsesToChatRequest({
         input: "Hi",
-        tools: [{ type: "function", function: { name: "echo" } }],
+        tools: [{ type: "web_search" }],
       }),
-    ).toThrow(/not supported/);
+    ).toThrow(/function tools/);
+  });
+
+  test("rejects previous_response_id continuations", () => {
+    expect(() =>
+      responsesToChatRequest({
+        input: [{ type: "function_call_output", call_id: "call_1", output: "Sunny" }],
+        previous_response_id: "resp_123",
+      }),
+    ).toThrow(/previous_response_id/);
   });
 
   test("maps instructions and string input", () => {
@@ -91,6 +129,26 @@ describe("responsesToChatRequest", () => {
       content: '{"ok":true}',
       tool_call_id: "call_abc",
     });
+  });
+
+  test("skips echoed reasoning output items", () => {
+    const messages = responsesInputToMessages([
+      { role: "user", content: "Weather?" },
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [{ type: "summary_text", text: "thinking" }],
+      },
+      {
+        type: "function_call",
+        call_id: "call_abc",
+        name: "get_weather",
+        arguments: "{}",
+      },
+    ]);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.role).toBe("user");
+    expect(messages[1]?.role).toBe("assistant");
   });
 
   test("maps function_call to assistant tool_calls", () => {

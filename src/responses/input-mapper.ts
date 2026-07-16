@@ -33,6 +33,12 @@ function preserveMessageContent(
 function inputItemToMessages(item: ResponsesInputItem): ChatMessage[] {
   const itemType = item.type;
 
+  // Clients following the documented `input = input.concat(response.output)`
+  // loop echo reasoning output items back; they carry no replayable content.
+  if (itemType === "reasoning") {
+    return [];
+  }
+
   if (itemType === "function_call_output") {
     if (!item.call_id?.trim()) {
       throw new ProxyError(
@@ -112,15 +118,69 @@ export function responsesInputToMessages(
   return messages;
 }
 
+/**
+ * Responses tools are flat (`{type:"function", name, parameters}`); chat
+ * completions nest the function fields. Convert so both endpoints share the
+ * native customTools path.
+ */
+function responsesToolsToChatTools(
+  tools: ResponsesRequest["tools"],
+): ChatCompletionRequest["tools"] {
+  if (!tools?.length) return undefined;
+  return tools.map((tool, index) => {
+    if (tool.type !== "function" || typeof tool.name !== "string") {
+      throw new ProxyError(
+        `Only function tools are supported: tools[${index}]`,
+        400,
+        "invalid_request_error",
+        `tools[${index}]`,
+      );
+    }
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        ...(typeof tool.description === "string"
+          ? { description: tool.description }
+          : {}),
+        ...(tool.parameters !== undefined
+          ? { parameters: tool.parameters }
+          : {}),
+      },
+    };
+  });
+}
+
+function responsesToolChoiceToChat(
+  toolChoice: unknown,
+): ChatCompletionRequest["tool_choice"] {
+  if (toolChoice == null) return undefined;
+  if (typeof toolChoice === "string") return toolChoice;
+  if (
+    typeof toolChoice === "object" &&
+    Reflect.get(toolChoice, "type") === "function" &&
+    typeof Reflect.get(toolChoice, "name") === "string"
+  ) {
+    return {
+      type: "function",
+      function: { name: Reflect.get(toolChoice, "name") },
+    };
+  }
+  return toolChoice as ChatCompletionRequest["tool_choice"];
+}
+
 export function responsesToChatRequest(
   request: ResponsesRequest,
 ): ChatCompletionRequest {
-  if (Array.isArray(request.tools) && request.tools.length > 0) {
+  // The proxy is stateless: it never stores responses, so a store-based
+  // continuation would silently answer without any prior context (and leave a
+  // paused client-tool run waiting out its timeout). Fail loudly instead.
+  if (request.previous_response_id != null) {
     throw new ProxyError(
-      "OpenAI Responses tools are not supported by this adapter. Use POST /v1/chat/completions with a tools array instead.",
+      "previous_response_id is not supported: this proxy does not store responses. Resend the full conversation via `input` (input = input.concat(response.output)).",
       400,
       "invalid_request_error",
-      "tools",
+      "previous_response_id",
     );
   }
 
@@ -141,8 +201,8 @@ export function responsesToChatRequest(
     temperature: request.temperature,
     top_p: request.top_p,
     max_tokens: request.max_output_tokens,
-    tools: request.tools,
-    tool_choice: request.tool_choice,
+    tools: responsesToolsToChatTools(request.tools),
+    tool_choice: responsesToolChoiceToChat(request.tool_choice),
     metadata: normalizeChatMetadata(request.metadata),
     user: request.user,
     reasoning_effort: request.reasoning?.effort,
