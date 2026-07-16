@@ -252,11 +252,14 @@ async function runTurnBody(
       );
 
       if (outcome.result.status === "error") {
+        // RunResult carries the failure in `error`; `result` is success text.
         throw new ProxyError(
-          outcome.result.result ?? "Agent run failed",
+          outcome.result.error?.message ??
+            outcome.result.result ??
+            "Agent run failed",
           502,
           "server_error",
-          "agent_run_error",
+          outcome.result.error?.code ?? "agent_run_error",
         );
       }
       if (outcome.result.status === "cancelled") {
@@ -284,7 +287,24 @@ async function runTurnBody(
     const committedKey = commitSession();
 
     const canPark = Boolean(coordinator && committedKey && prepared.retainAgent);
-    if (coordinator && !canPark) {
+    if (coordinator && canPark) {
+      // Park in the same synchronous step as commitSession: agent disposal
+      // driven by another request's prepare runs outside the turn queue, and
+      // its onAgentDisposed teardown only finds the bridge if no await
+      // separates the commit from the registration. If the final write below
+      // fails, the catch reclaims the bridge and tears the run down.
+      toolBridges.register(
+        {
+          agentId: prepared.agentId,
+          run,
+          relay,
+          coordinator,
+          completion,
+        },
+        config.CURSOR_TOOL_RESULT_TIMEOUT_MS,
+      );
+      runParked = true;
+    } else if (coordinator) {
       // No session to route the follow-up back to this run (sessions
       // disabled): unblock the SDK and cancel; the follow-up request replays
       // the tool results as prompt text on a fresh run.
@@ -297,25 +317,15 @@ async function runTurnBody(
 
     await sink.complete();
 
-    // Park only after the response reached the client — if the final write
-    // had failed, the catch below must tear the run down, not leave a
-    // registered bridge whose coordinator it already settled.
-    if (coordinator && canPark) {
-      toolBridges.register(
-        {
-          agentId: prepared.agentId,
-          run,
-          relay,
-          coordinator,
-          completion,
-        },
-        config.CURSOR_TOOL_RESULT_TIMEOUT_MS,
-      );
-      runParked = true;
-    }
-
     return { state, meta: cursorMeta, prepared };
   } catch (err) {
+    if (runParked) {
+      // The final write failed after parking: reclaim the bridge so the
+      // teardown below owns the run again (a disposal racing this may
+      // already have taken and aborted it — then there is nothing to take).
+      toolBridges.take(prepared.agentId);
+      runParked = false;
+    }
     await relay?.detach().catch(() => {});
     coordinator?.detachSegment();
     coordinator?.settleAll(

@@ -24,13 +24,20 @@ interface FakeCustomTool {
   ) => unknown;
 }
 
+interface FakeRunResult {
+  id: string;
+  status: string;
+  result?: string;
+  error?: { message: string; code?: string };
+}
+
 interface FakeRun {
   id: string;
   agentId: string;
   status: string;
   supports: (op: string) => boolean;
   stream: () => AsyncGenerator<unknown, void>;
-  wait: () => Promise<{ id: string; status: string; result?: string }>;
+  wait: () => Promise<FakeRunResult>;
   cancel: () => Promise<void>;
   cancelled: boolean;
 }
@@ -48,12 +55,10 @@ function createFakeAgent(agentId = "agent-1") {
       const streamClosed = new Promise<void>((resolve) => {
         releaseStream = resolve;
       });
-      let resolveWait!: (result: { id: string; status: string; result?: string }) => void;
-      const waited = new Promise<{ id: string; status: string; result?: string }>(
-        (resolve) => {
-          resolveWait = resolve;
-        },
-      );
+      let resolveWait!: (result: FakeRunResult) => void;
+      const waited = new Promise<FakeRunResult>((resolve) => {
+        resolveWait = resolve;
+      });
 
       const run: FakeRun = {
         id,
@@ -85,10 +90,16 @@ function createFakeAgent(agentId = "agent-1") {
         releaseStream();
         resolveWait({ id, status: "finished", result });
       });
-      Reflect.set(send, "fail", (message: string) => {
+      // Real SDK runs report failures via `error.message`/`error.code`;
+      // `result` stays the success-text field.
+      Reflect.set(send, "fail", (message: string, code?: string) => {
         run.status = "error";
         releaseStream();
-        resolveWait({ id, status: "error", result: message });
+        resolveWait({
+          id,
+          status: "error",
+          error: { message, ...(code !== undefined ? { code } : {}) },
+        });
       });
       sends.push(send);
       return run;
@@ -107,10 +118,12 @@ function createFakeAgent(agentId = "agent-1") {
       (sends[sends.length - 1] as never as { finish: (r: string) => void }).finish(
         result,
       ),
-    fail: (message: string) =>
-      (sends[sends.length - 1] as never as { fail: (m: string) => void }).fail(
-        message,
-      ),
+    fail: (message: string, code?: string) =>
+      (
+        sends[sends.length - 1] as never as {
+          fail: (m: string, c?: string) => void;
+        }
+      ).fail(message, code),
   };
 }
 
@@ -457,6 +470,158 @@ describe("native client tool loop", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  test("maps a run that errors during an active segment to a 502 with the SDK detail", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const turn = executeAgentTurn({
+      proxy,
+      request: toolRequest([{ role: "user", content: "Weather in NYC?" }]),
+    });
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    // The run errors while the segment is still active, before the
+    // collect-window pause finishes the response with tool_calls.
+    fake.fail("Upstream provider 503", "provider_unavailable");
+
+    await expect(turn).rejects.toMatchObject({
+      status: 502,
+      code: "provider_unavailable",
+      message: "Upstream provider 503",
+    });
+    // The pending execute was settled and nothing was parked.
+    expect(await executeResult).toMatchObject({ isError: true });
+    expect(proxy.toolBridges.size()).toBe(0);
+  });
+
+  test("maps a run cancelled during an active segment to a 499", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const turn = executeAgentTurn({
+      proxy,
+      request: toolRequest([{ role: "user", content: "Weather in NYC?" }]),
+    });
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    await fake.lastSend().run.cancel();
+
+    await expect(turn).rejects.toMatchObject({
+      status: 499,
+      message: "Agent run was cancelled",
+    });
+    expect(await executeResult).toMatchObject({ isError: true });
+    expect(proxy.toolBridges.size()).toBe(0);
+  });
+
+  test("disposal while the pause response is still streaming tears down the bridge", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    const turn = executeAgentTurn(
+      {
+        proxy,
+        request: toolRequest([{ role: "user", content: "Weather in NYC?" }], true),
+      },
+      {
+        stream: {
+          write: async (chunk) => {
+            // A concurrent request disposes the agent after the session
+            // commit but before the response has reached the client.
+            if (
+              chunk !== "[DONE]" &&
+              chunk.choices[0]?.finish_reason === "tool_calls"
+            ) {
+              proxy.sessions.clearForTests();
+            }
+          },
+        },
+      },
+    );
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    const outcome = await turn;
+    expect(outcome.state.toolCalls.size).toBe(1);
+
+    // The bridge was registered before the final write, so the disposal hook
+    // found and aborted it instead of leaving a zombie until the timeout.
+    expect(proxy.toolBridges.size()).toBe(0);
+    expect(await executeResult).toMatchObject({ isError: true });
+    await waitFor(() => fake.lastSend().run.cancelled);
+  });
+
+  test("reclaims the parked bridge when the final write fails", async () => {
+    const proxy = makeProxy();
+    const fake = createFakeAgent();
+    seedSession(proxy, fake.agent, "agent-1");
+
+    let bridgesAtFinishWrite = -1;
+    const turn = executeAgentTurn(
+      {
+        proxy,
+        request: toolRequest([{ role: "user", content: "Weather in NYC?" }], true),
+      },
+      {
+        stream: {
+          write: async (chunk) => {
+            if (
+              chunk !== "[DONE]" &&
+              chunk.choices[0]?.finish_reason === "tool_calls"
+            ) {
+              // The run parks before the finish chunk goes out; the client
+              // vanishes mid-write. (sink.fail retries this chunk once, so
+              // only record the registry size on the first attempt.)
+              if (bridgesAtFinishWrite === -1) {
+                bridgesAtFinishWrite = proxy.toolBridges.size();
+              }
+              throw new Error("client went away");
+            }
+          },
+        },
+      },
+    );
+
+    await waitFor(() => fake.sends.length === 1);
+    const customTools = fake.lastSend().options.local?.customTools;
+    const executeResult = customTools!.get_weather!.execute(
+      { city: "NYC" },
+      {},
+    ) as Promise<unknown>;
+
+    await expect(turn).rejects.toMatchObject({
+      status: 500,
+      message: "client went away",
+    });
+
+    // Registered before the final write, reclaimed when the write failed —
+    // not left in the registry until the tool-result timeout.
+    expect(bridgesAtFinishWrite).toBe(1);
+    expect(proxy.toolBridges.size()).toBe(0);
+    expect(await executeResult).toMatchObject({ isError: true });
+    await waitFor(() => fake.lastSend().run.cancelled);
   });
 
   test("cancels the parked run when the tool-result timeout elapses", async () => {
