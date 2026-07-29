@@ -13,6 +13,10 @@ import {
   resolveRequestedModelId,
   resolveSpeedAliasParams,
 } from "./model-aliases.js";
+import {
+  parseVariantId,
+  validateVariantParams,
+} from "./model-variants.js";
 import { listCachedModels } from "./model-catalog-cache.js";
 import { resolveIncludeThinking } from "./turn-policy.js";
 
@@ -117,7 +121,8 @@ export function requiresModelCatalog(
   return (
     options.reasoningEffort !== undefined ||
     options.includeThinking ||
-    requestedIdHasSpeedSuffix(requestedId)
+    requestedIdHasSpeedSuffix(requestedId) ||
+    parseVariantId(requestedId) !== undefined
   );
 }
 
@@ -147,6 +152,34 @@ export async function resolveModel(
     ? await listCachedModels(config.CURSOR_API_KEY)
     : undefined;
   const catalogIds = catalog ? new Set(catalog.map((m) => m.id)) : undefined;
+
+  // Full-variant ids (`base__ctx1m-effhigh-fasttrue`) resolve to their base
+  // model with the encoded params injected as explicit params. This path takes
+  // precedence over speed aliases and auto-thinking so the selected combo wins.
+  const variant = parseVariantId(requestedId);
+  if (variant) {
+    const catalogModel = catalog?.find((m) => m.id === variant.baseId);
+    if (needsCatalog && !catalogModel) {
+      throw new ProxyError(
+        `Model "${requestedId}" is unknown (resolved base id "${variant.baseId}")`,
+        400,
+        "invalid_request_error",
+        "model_not_found",
+      );
+    }
+    validateVariantParams(variant.params, catalogModel?.variants);
+
+    // Variant params are explicit; let any client-supplied cursor_model_params
+    // override individual axes (same precedence as the explicit path).
+    const merged = mergeModelParams({
+      explicit: [...variant.params, ...(explicit ?? [])],
+    });
+    return {
+      clientModel: requestedId,
+      sdk: buildSdkModelSelection(variant.baseId, merged),
+    };
+  }
+
   const { baseId, speedAlias } = resolveRequestedModelId(requestedId, catalogIds);
   const catalogModel = catalog?.find((m) => m.id === baseId);
 

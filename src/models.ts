@@ -1,17 +1,12 @@
 import type { SDKModel } from "@cursor/sdk";
 import { listCachedModels } from "./model-catalog-cache.js";
 import {
-  FAST_MODEL_PARAM_ID,
-  type ModelSpeedAlias,
-  fastParamValueForSpeedAlias,
-  modelSupportsSpeedAliases,
-  speedAliasDisplayName,
-  speedAliasModelId,
-} from "./model-aliases.js";
+  variantModelId,
+  variantDisplayName,
+} from "./model-variants.js";
 import type { ModelsListResponse, OpenAIModel } from "./openai.js";
 
 const MODEL_CREATED = 1700000000;
-const SPEED_ALIASES = ["slow", "fast"] as const satisfies readonly ModelSpeedAlias[];
 
 function catalogModelToOpenAI(m: SDKModel): OpenAIModel {
   return {
@@ -27,23 +22,27 @@ function catalogModelToOpenAI(m: SDKModel): OpenAIModel {
   };
 }
 
-function speedAliasOpenAIModel(
+/**
+ * Build one model entry per catalog variant, so clients can select any valid
+ * param combo by model id (e.g. `claude-opus-5__ctx1m-effhigh-fasttrue`).
+ * The base entry (no params) is always emitted first and uses the proxy's
+ * default variant, so clients that want "just the model" still work.
+ */
+function variantOpenAIModel(
   m: SDKModel,
-  alias: ModelSpeedAlias,
+  params: NonNullable<SDKModel["variants"]>[number]["params"],
+  displayName: string,
 ): OpenAIModel {
   return {
-    id: speedAliasModelId(m.id, alias),
+    id: variantModelId(m.id, params),
     object: "model",
     created: MODEL_CREATED,
     owned_by: "cursor",
-    display_name: speedAliasDisplayName(m.displayName, alias),
+    display_name: displayName,
     ...(m.description ? { description: m.description } : {}),
     ...(m.parameters?.length ? { cursor_parameters: m.parameters } : {}),
     cursor_base_model: m.id,
-    cursor_speed_alias: alias,
-    cursor_model_params: [
-      { id: FAST_MODEL_PARAM_ID, value: fastParamValueForSpeedAlias(alias) },
-    ],
+    cursor_model_params: params,
   };
 }
 
@@ -54,14 +53,35 @@ export async function listModels(apiKey: string): Promise<ModelsListResponse> {
 
   for (const m of models) {
     data.push(catalogModelToOpenAI(m));
-    if (modelSupportsSpeedAliases(m)) {
-      for (const alias of SPEED_ALIASES) {
-        if (!catalogIds.has(speedAliasModelId(m.id, alias))) {
-          data.push(speedAliasOpenAIModel(m, alias));
-        }
-      }
+
+    const variants = m.variants ?? [];
+    // A single variant that is the default adds no selectable choice beyond the
+    // base entry, so skip it to avoid a redundant id equal to the base.
+    if (variants.length <= 1) continue;
+
+    const defaultKey = variantSignature(
+      variants.find((v) => v.isDefault)?.params ?? [],
+    );
+    for (const v of variants) {
+      // Skip the default variant: the base entry already represents it.
+      if (variantSignature(v.params) === defaultKey) continue;
+      const id = variantModelId(m.id, v.params);
+      // Defensive: never shadow a real catalog id.
+      if (catalogIds.has(id)) continue;
+      data.push(
+        variantOpenAIModel(m, v.params, variantDisplayName(m.displayName, v.params)),
+      );
     }
   }
 
   return { object: "list", data };
+}
+
+function variantSignature(
+  params: { id: string; value: string }[],
+): string {
+  return [...params]
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((p) => `${p.id}=${p.value}`)
+    .join("|");
 }
