@@ -47,7 +47,14 @@ function paramIdLooksLikeThinkingEffort(
   id: string,
   displayName?: string,
 ): boolean {
-  if (id === "thinking_effort" || id === "thinking") return true;
+  if (
+    id === "thinking_effort" ||
+    id === "thinking" ||
+    id === "effort" ||
+    id === "reasoning"
+  ) {
+    return true;
+  }
   return displayName?.toLowerCase().includes("thinking") ?? false;
 }
 
