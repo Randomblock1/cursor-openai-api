@@ -118,6 +118,47 @@ export function mergeModelParams(
   return [...byId.entries()].map(([id, value]) => ({ id, value }));
 }
 
+/**
+ * Resolve the reasoning-effort axis shared by the variant and non-variant
+ * resolution paths: validate reasoning_effort against the model's thinking
+ * param, compute the runtime reasoning_effort value, and the auto-thinking
+ * default injected when includeThinking is on and no explicit effort is set.
+ * Centralized so the two paths cannot drift (the variant path previously
+ * omitted this logic and silently dropped reasoning_effort).
+ */
+function resolveReasoningParams(
+  request: ChatCompletionRequest,
+  requestedId: string,
+  effortParamId: string | undefined,
+  explicitParams: ModelParameterValue[] | undefined,
+  includeThinking: boolean,
+  catalogModel: ModelListItem | undefined,
+): { reasoningEffort?: string; autoThinkingEffort?: string } {
+  if (request.reasoning_effort !== undefined && !effortParamId) {
+    throw new ProxyError(
+      `Model "${requestedId}" does not support reasoning_effort`,
+      400,
+      "invalid_request_error",
+      "unsupported_reasoning_effort",
+    );
+  }
+  const reasoningEffort =
+    request.reasoning_effort !== undefined && effortParamId
+      ? request.reasoning_effort
+      : undefined;
+  const explicitHasEffort =
+    effortParamId != null && explicitParams?.some((p) => p.id === effortParamId);
+  const autoThinkingEffort =
+    includeThinking &&
+    effortParamId &&
+    !explicitHasEffort &&
+    request.reasoning_effort === undefined &&
+    catalogModel
+      ? defaultThinkingEffortValue(catalogModel, effortParamId)
+      : undefined;
+  return { reasoningEffort, autoThinkingEffort };
+}
+
 export function requiresModelCatalog(
   requestedId: string,
   options: {
@@ -178,36 +219,17 @@ export async function resolveModel(
 
     // Variant ids encode only context × fast; the thinking/effort axis stays
     // runtime-controllable via reasoning_effort and includeThinking, identical
-    // to the non-variant path. Run the same validation + auto-thinking flow so
-    // variant-id requests don't silently drop reasoning_effort.
+    // to the non-variant path.
     const effortParamId = findThinkingEffortParamId(catalogModel);
-
-    if (request.reasoning_effort !== undefined && !effortParamId) {
-      throw new ProxyError(
-        `Model "${requestedId}" does not support reasoning_effort`,
-        400,
-        "invalid_request_error",
-        "unsupported_reasoning_effort",
-      );
-    }
-
-    const reasoningEffort =
-      request.reasoning_effort !== undefined && effortParamId
-        ? request.reasoning_effort
-        : undefined;
-
     const combinedExplicit = [...variant.params, ...(explicit ?? [])];
-    const explicitHasEffort =
-      effortParamId != null && combinedExplicit.some((p) => p.id === effortParamId);
-
-    const autoThinkingEffort =
-      includeThinking &&
-      effortParamId &&
-      !explicitHasEffort &&
-      request.reasoning_effort === undefined &&
-      catalogModel
-        ? defaultThinkingEffortValue(catalogModel, effortParamId)
-        : undefined;
+    const { reasoningEffort, autoThinkingEffort } = resolveReasoningParams(
+      request,
+      requestedId,
+      effortParamId,
+      combinedExplicit,
+      includeThinking,
+      catalogModel,
+    );
 
     const merged = mergeModelParams({
       explicit: combinedExplicit,
@@ -246,32 +268,14 @@ export async function resolveModel(
   }
 
   const effortParamId = findThinkingEffortParamId(catalogModel);
-
-  if (request.reasoning_effort !== undefined && !effortParamId) {
-    throw new ProxyError(
-      `Model "${requestedId}" does not support reasoning_effort`,
-      400,
-      "invalid_request_error",
-      "unsupported_reasoning_effort",
-    );
-  }
-
-  const reasoningEffort =
-    request.reasoning_effort !== undefined && effortParamId
-      ? request.reasoning_effort
-      : undefined;
-
-  const explicitHasEffort =
-    effortParamId != null && explicit?.some((p) => p.id === effortParamId);
-
-  const autoThinkingEffort =
-    includeThinking &&
-    effortParamId &&
-    !explicitHasEffort &&
-    request.reasoning_effort === undefined &&
-    catalogModel
-      ? defaultThinkingEffortValue(catalogModel, effortParamId)
-      : undefined;
+  const { reasoningEffort, autoThinkingEffort } = resolveReasoningParams(
+    request,
+    requestedId,
+    effortParamId,
+    explicit,
+    includeThinking,
+    catalogModel,
+  );
 
   const params = mergeModelParams({
     explicit,
