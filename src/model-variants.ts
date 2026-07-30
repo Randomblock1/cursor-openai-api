@@ -40,6 +40,25 @@ export function sortParams(
   );
 }
 
+// Percent-encode the `-` segment separator and `_` inside param values so they
+// round-trip exactly through encode/decode instead of being stripped (which
+// collided values like "extra-high" / "extrahigh"). `%` is encoded first so the
+// escape sequences themselves cannot appear unescaped in a value.
+function encodeValue(value: string): string {
+  return String(value)
+    .replace(/%/g, "%25")
+    .replace(/-/g, "%2D")
+    .replace(/_/g, "%5F");
+}
+
+function decodeValue(value: string): string {
+  // Reverse order: decode `%25` last so e.g. "%252D" -> "%2D", not "-".
+  return value
+    .replace(/%5F/g, "_")
+    .replace(/%2D/g, "-")
+    .replace(/%25/g, "%");
+}
+
 function encodeParam(p: ModelParameterValue): string {
   const key = SHORT_KEYS[p.id];
   if (!key) {
@@ -50,9 +69,7 @@ function encodeParam(p: ModelParameterValue): string {
       "unknown_variant_param",
     );
   }
-  // Strip characters that would break the `-` segment separator.
-  const value = String(p.value).replace(/[-_]/g, "");
-  return `${key}${value}`;
+  return `${key}${encodeValue(p.value)}`;
 }
 
 function decodeSegment(segment: string): ModelParameterValue | null {
@@ -63,7 +80,7 @@ function decodeSegment(segment: string): ModelParameterValue | null {
     if (segment.startsWith(shortKey)) {
       const longKey = LONG_KEYS[shortKey];
       if (!longKey) return null;
-      return { id: longKey, value: segment.slice(shortKey.length) };
+      return { id: longKey, value: decodeValue(segment.slice(shortKey.length)) };
     }
   }
   return null;
@@ -127,14 +144,16 @@ export function validateVariantParams(
   const requested = sortParams(params)
     .map((p) => `${p.id}=${p.value}`)
     .join("|");
-  const known = new Set(
-    variants.map((v) =>
-      sortParams(v.params)
-        .map((p) => `${p.id}=${p.value}`)
-        .join("|"),
-    ),
-  );
-  if (!known.has(requested)) {
+  // Variant ids encode only the flattened axes (context × fast); the thinking
+  // axis is runtime-controllable and omitted from the id, so a catalog variant
+  // carries a superset of the encoded params. A requested set is valid when it
+  // is a subset of some catalog variant's full params (every requested id/value
+  // is matched in that one variant).
+  const matches = variants.some((v) => {
+    const byId = new Map(v.params.map((p) => [p.id, p.value]));
+    return params.every((p) => byId.get(p.id) === p.value);
+  });
+  if (!matches) {
     throw new ProxyError(
       `Model variant not found for params "${requested}"`,
       400,

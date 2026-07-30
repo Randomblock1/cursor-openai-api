@@ -176,10 +176,44 @@ export async function resolveModel(
     }
     validateVariantParams(variant.params, catalogModel?.variants);
 
-    // Variant params are explicit; let any client-supplied cursor_model_params
-    // override individual axes (same precedence as the explicit path).
+    // Variant ids encode only context × fast; the thinking/effort axis stays
+    // runtime-controllable via reasoning_effort and includeThinking, identical
+    // to the non-variant path. Run the same validation + auto-thinking flow so
+    // variant-id requests don't silently drop reasoning_effort.
+    const effortParamId = findThinkingEffortParamId(catalogModel);
+
+    if (request.reasoning_effort !== undefined && !effortParamId) {
+      throw new ProxyError(
+        `Model "${requestedId}" does not support reasoning_effort`,
+        400,
+        "invalid_request_error",
+        "unsupported_reasoning_effort",
+      );
+    }
+
+    const reasoningEffort =
+      request.reasoning_effort !== undefined && effortParamId
+        ? request.reasoning_effort
+        : undefined;
+
+    const combinedExplicit = [...variant.params, ...(explicit ?? [])];
+    const explicitHasEffort =
+      effortParamId != null && combinedExplicit.some((p) => p.id === effortParamId);
+
+    const autoThinkingEffort =
+      includeThinking &&
+      effortParamId &&
+      !explicitHasEffort &&
+      request.reasoning_effort === undefined &&
+      catalogModel
+        ? defaultThinkingEffortValue(catalogModel, effortParamId)
+        : undefined;
+
     const merged = mergeModelParams({
-      explicit: [...variant.params, ...(explicit ?? [])],
+      explicit: combinedExplicit,
+      reasoningEffort,
+      effortParamId,
+      autoThinkingEffort,
     });
     return {
       clientModel: requestedId,
